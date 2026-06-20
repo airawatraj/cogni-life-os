@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import base64
+import shutil
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .auth import TokenStore
@@ -13,7 +15,8 @@ from .ingest import capture_text
 from .ingest import capture_binary
 from .integrity import scan
 from .markdown import parse_frontmatter
-from .model_contract import discover_endpoint
+from .media import WHISPER_MODEL, extract
+from .model_contract import chat, discover_endpoint
 from .vault import Vault
 
 
@@ -29,7 +32,8 @@ APP_HTML = """<!doctype html>
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <title>Cogni Life OS</title>
   <link rel="manifest" href="/manifest.json">
-  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="icon" href="/static/branding/cogni-chat-new-logo-round.ico" sizes="16x16 32x32" type="image/x-icon">
+  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.jpg">
   <style>
     :root {
       color-scheme: light dark;
@@ -101,6 +105,10 @@ APP_HTML = """<!doctype html>
       background: linear-gradient(135deg, #0b6f68, #7d4f95);
       box-shadow: var(--shadow);
     }
+    .brand-logo, .compact-logo { object-fit: cover; display: block; border-radius: 8px; box-shadow: var(--shadow); flex: 0 0 auto; }
+    .brand-logo { width: 46px; height: 46px; }
+    .compact-logo { width: 42px; height: 42px; }
+    .login-hero { width: 78px; height: 78px; border-radius: 14px; object-fit: cover; box-shadow: var(--shadow); }
     .brand h1 { font-size: 18px; line-height: 1.1; margin: 0; letter-spacing: 0; }
     .brand p { margin: 3px 0 0; color: var(--muted); font-size: 13px; }
     .status-stack { display: grid; gap: 8px; }
@@ -150,7 +158,7 @@ APP_HTML = """<!doctype html>
     .screen.active { display: block; }
     .chat-shell {
       max-width: 980px; height: calc(100dvh - 44px);
-      margin: 0 auto; display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
+      margin: 0 auto; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto auto;
       border: 1px solid var(--line); border-radius: 8px; background: color-mix(in srgb, var(--panel) 94%, transparent);
       box-shadow: var(--shadow); overflow: hidden;
     }
@@ -185,7 +193,22 @@ APP_HTML = """<!doctype html>
       border-radius: 8px; width: 46px; height: 46px; display: grid; place-items: center; cursor: pointer;
     }
     .icon-btn[disabled] { opacity: .45; cursor: not-allowed; }
+    .icon-btn.recording { background: var(--bad); border-color: color-mix(in srgb, #db5b51 48%, var(--line)); }
     .send { background: var(--brand); color: white; border-color: var(--brand); }
+    .voice-panel {
+      border-top: 1px solid var(--line);
+      padding: 8px 12px;
+      display: none;
+      gap: 10px;
+      align-items: center;
+      background: var(--panel);
+    }
+    .voice-panel.visible { display: flex; }
+    .meter { height: 8px; min-width: 90px; flex: 1; border-radius: 999px; background: var(--panel-2); overflow: hidden; border: 1px solid var(--line); }
+    .meter > span { display: block; height: 100%; width: 0%; background: var(--brand); }
+    .mode-select { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); padding: 8px; }
+    .speech-controls { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+    .mini-btn { border: 1px solid var(--line); background: var(--panel-2); color: var(--text); min-height: 34px; border-radius: 8px; padding: 6px 9px; cursor: pointer; }
     textarea, input {
       width: 100%; border: 1px solid var(--line); border-radius: 8px;
       background: var(--panel); color: var(--text); padding: 12px 13px;
@@ -251,7 +274,7 @@ APP_HTML = """<!doctype html>
 <div class="app">
   <aside class="rail">
     <div class="brand">
-      <div class="mark" aria-hidden="true">CL</div>
+      <img class="brand-logo" src="/static/branding/cogni-logo.jpeg" alt="Cogni Life OS logo">
       <div><h1>Cogni Life OS</h1><p>Local household intelligence</p></div>
     </div>
     <div class="status-stack" aria-label="Service status">
@@ -279,7 +302,7 @@ APP_HTML = """<!doctype html>
 
   <main class="main">
     <header class="topbar">
-      <div class="brand"><div class="mark" aria-hidden="true">CL</div><div><h1>Cogni Life OS</h1><p id="mobileSub">Locked</p></div></div>
+      <div class="brand"><img class="compact-logo" src="/static/branding/cogni-chat-new-logo-round.ico" alt="Cogni"><div><h1>Cogni Life OS</h1><p id="mobileSub">Locked</p></div></div>
       <button class="icon-btn" id="refreshBtn" title="Refresh status" aria-label="Refresh status">R</button>
     </header>
     <div class="view">
@@ -290,14 +313,37 @@ APP_HTML = """<!doctype html>
               <strong>Cogni</strong>
               <div class="small muted">Search-backed conversation with your local vault</div>
             </div>
-            <div class="pill"><span class="dot warn" id="chatModelDot"></span><span id="activeModel">Model unavailable</span></div>
+            <div class="row">
+              <select class="mode-select" id="conversationMode" aria-label="Conversation mode">
+                <option value="text">Text</option>
+                <option value="voice">Voice</option>
+                <option value="listen">Listen</option>
+                <option value="mute">Mute</option>
+              </select>
+              <div class="pill"><span class="dot warn" id="chatModelDot"></span><span id="activeModel">Model unavailable</span></div>
+            </div>
+          </div>
+          <div class="voice-panel visible" id="playbackPanel">
+            <span class="small muted">Spoken replies use browser speechSynthesis when enabled.</span>
+            <div class="speech-controls">
+              <button class="mini-btn" id="pauseSpeechBtn" type="button">Pause</button>
+              <button class="mini-btn" id="resumeSpeechBtn" type="button">Resume</button>
+              <button class="mini-btn" id="stopSpeechBtn" type="button">Stop</button>
+              <button class="mini-btn" id="replaySpeechBtn" type="button">Replay</button>
+            </div>
           </div>
           <div class="messages" id="messages" aria-live="polite"></div>
+          <div class="voice-panel" id="voicePanel">
+            <strong id="recordingState">Recording</strong>
+            <span class="small muted" id="recordingDuration">0.0s</span>
+            <div class="meter" aria-label="Audio level"><span id="audioLevel"></span></div>
+            <button class="mini-btn" id="cancelVoiceBtn" type="button">Cancel</button>
+          </div>
           <form class="composer" id="chatForm">
             <label class="icon-btn" title="Attach image or document" aria-label="Attach image or document">
               +<input class="sr-only" id="chatFile" type="file" accept="image/*,.pdf,.txt,.md,.docx">
             </label>
-            <button class="icon-btn" id="voiceBtn" type="button" disabled title="Voice notes unavailable in this browser/service">Mic</button>
+            <button class="icon-btn" id="voiceBtn" type="button" title="Hold to talk">Mic</button>
             <textarea id="chatInput" rows="1" placeholder="Ask Cogni..." autocomplete="off"></textarea>
             <button class="send" type="submit" title="Send" aria-label="Send">Send</button>
           </form>
@@ -342,7 +388,7 @@ APP_HTML = """<!doctype html>
             <h2>Settings</h2>
             <div class="item"><strong>Theme</strong><div class="small muted">Follows the system light or dark setting.</div></div>
             <div class="item"><strong>Remote access</strong><div class="small muted" id="remoteState">Loopback-only by default.</div></div>
-            <div class="item"><strong>Voice notes</strong><div class="small muted">Disabled until browser recording and backend ingestion are available together.</div></div>
+            <div class="item"><strong>Voice</strong><div class="small muted" id="voiceState">Checking local transcription and browser playback.</div></div>
             <button class="button secondary" id="logoutBtn">Forget service token</button>
           </div>
           <div class="panel stack">
@@ -381,7 +427,7 @@ APP_HTML = """<!doctype html>
 
 <div class="login" id="login">
   <form class="login-card" id="loginForm">
-    <div class="brand"><div class="mark" aria-hidden="true">CL</div><div><h1>Cogni Life OS</h1><p>Authenticate to your local service</p></div></div>
+    <div class="brand"><img class="login-hero" src="/static/branding/cogni-logo.jpeg" alt="Cogni Life OS logo"><div><h1>Cogni Life OS</h1><p>Authenticate to your local service</p></div></div>
     <label class="stack">Service token<input id="tokenInput" type="password" autocomplete="current-password" placeholder="Paste your service token"></label>
     <button class="button" type="submit">Unlock</button>
     <div class="small muted" id="loginError">The token stays in this browser and is sent only to this local service.</div>
@@ -399,9 +445,23 @@ APP_HTML = """<!doctype html>
 <script>
 const state = {
   token: localStorage.getItem("cogni_token") || "",
+  mode: localStorage.getItem("cogni_conversation_mode") || "text",
   status: null,
   messages: [],
-  pendingProposal: null
+  pendingProposal: null,
+  recorder: null,
+  recording: false,
+  cancelRecording: false,
+  recordingStarted: 0,
+  recordingTimer: null,
+  audioContext: null,
+  audioSource: null,
+  audioProcessor: null,
+  audioStream: null,
+  audioSamples: [],
+  audioSampleRate: 16000,
+  lastSpokenText: "",
+  muted: false
 };
 const $ = (id) => document.getElementById(id);
 const views = ["chat", "capture", "knowledge", "tasks", "settings", "advanced"];
@@ -454,6 +514,7 @@ function renderStatus(status) {
   $("localUrl").textContent = status.service.local_url;
   $("modelEndpoint").textContent = `${status.model.endpoint} . ${status.model.endpoint_status}`;
   $("remoteState").textContent = status.service.loopback_only ? "Loopback-only: phones cannot reach this service." : "Reachable URL is configured for this session.";
+  $("voiceState").textContent = `STT: ${status.voice.stt.provider} (${status.voice.stt.status}). TTS: ${status.voice.tts.provider} (${status.voice.tts.status}).`;
   $("phoneWarning").hidden = !status.service.loopback_only;
   setDot("serviceDot", "ok"); setDot("vaultDot", status.vault.status === "ready" ? "ok" : "bad");
   setDot("indexDot", "ok"); setDot("safeDot", "ok"); setDot("launchDot", status.service.loopback_only ? "warn" : "ok");
@@ -503,13 +564,12 @@ function proposalHtml(text) {
 }
 async function sendChat(text) {
   addMessage("user", escapeHtml(text));
-  const results = await searchVault(text);
-  if (results.length) {
-    const lead = `I found ${results.length} relevant source${results.length === 1 ? "" : "s"} in your vault. Open the citations below to inspect the underlying notes.`;
-    addMessage("assistant", escapeHtml(lead), sourcesHtml(results));
+  const data = await api("/api/chat", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({message:text})});
+  addMessage("assistant", escapeHtml(data.reply || "No reply returned."), sourcesHtml(data.sources || []));
+  if (data.status !== "completed") {
+    addMessage("assistant", escapeHtml(data.detail || "Cogni-Brain is unavailable."), proposalHtml(text));
   } else {
-    const disabled = state.status?.model?.endpoint_status === "online" ? "No matching vault sources were found for this question." : "No matching vault sources were found. Live model answering is not exposed by this service yet, so I will not invent an answer.";
-    addMessage("assistant", escapeHtml(disabled), proposalHtml(text));
+    speakIfEnabled(data.reply || "");
   }
 }
 async function searchVault(query) {
@@ -528,6 +588,122 @@ async function uploadFile(file) {
   });
   const data_base64 = String(dataUrl).split(",", 2)[1] || "";
   return await api("/api/upload", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({filename:file.name, data_base64, channel:"pwa", sender:"user"})});
+}
+async function transcribeAudio(wavBytes, durationSeconds) {
+  const binary = Array.from(new Uint8Array(wavBytes), byte => String.fromCharCode(byte)).join("");
+  return await api("/api/transcribe", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({filename:"voice.wav", duration_seconds: durationSeconds, data_base64:btoa(binary)})});
+}
+function canSpeak() {
+  return "speechSynthesis" in window && state.mode !== "text" && state.mode !== "mute" && !state.muted;
+}
+function speechText(text) {
+  return String(text || "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/https?:\/\/\S+/g, " link ")
+    .replace(/\[[^\]]+\]\([^)]*\)/g, " ")
+    .replace(/\[[0-9]+\]/g, " ")
+    .replace(/[`*_#>{}\[\]]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+function stopSpeech() {
+  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+}
+function speakIfEnabled(text) {
+  state.lastSpokenText = text || state.lastSpokenText;
+  if (!canSpeak()) return;
+  stopSpeech();
+  const clean = speechText(text);
+  if (!clean) return;
+  const utterance = new SpeechSynthesisUtterance(clean);
+  utterance.rate = 1;
+  utterance.pitch = 1;
+  window.speechSynthesis.speak(utterance);
+}
+function encodeWav(samples, sampleRate) {
+  const length = samples.reduce((sum, item) => sum + item.length, 0);
+  const pcm = new Int16Array(length);
+  let offset = 0;
+  for (const chunk of samples) {
+    for (let i = 0; i < chunk.length; i++) {
+      const value = Math.max(-1, Math.min(1, chunk[i]));
+      pcm[offset++] = value < 0 ? value * 0x8000 : value * 0x7fff;
+    }
+  }
+  const buffer = new ArrayBuffer(44 + pcm.length * 2);
+  const view = new DataView(buffer);
+  const write = (pos, value) => { for (let i = 0; i < value.length; i++) view.setUint8(pos + i, value.charCodeAt(i)); };
+  write(0, "RIFF"); view.setUint32(4, 36 + pcm.length * 2, true); write(8, "WAVE"); write(12, "fmt ");
+  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true); view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true); write(36, "data"); view.setUint32(40, pcm.length * 2, true);
+  for (let i = 0; i < pcm.length; i++) view.setInt16(44 + i * 2, pcm[i], true);
+  return buffer;
+}
+async function startRecording(event) {
+  event.preventDefault();
+  if (state.recording) return;
+  stopSpeech();
+  state.cancelRecording = false;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({audio: {channelCount: 1, echoCancellation: true, noiseSuppression: true}});
+    const context = new (window.AudioContext || window.webkitAudioContext)();
+    const source = context.createMediaStreamSource(stream);
+    const processor = context.createScriptProcessor(4096, 1, 1);
+    state.audioSamples = [];
+    state.audioSampleRate = context.sampleRate;
+    processor.onaudioprocess = event => {
+      const input = event.inputBuffer.getChannelData(0);
+      state.audioSamples.push(new Float32Array(input));
+      let sum = 0;
+      for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
+      $("audioLevel").style.width = Math.min(100, Math.sqrt(sum / input.length) * 240) + "%";
+    };
+    source.connect(processor);
+    processor.connect(context.destination);
+    state.audioContext = context; state.audioSource = source; state.audioProcessor = processor; state.audioStream = stream;
+    state.recording = true; state.recordingStarted = Date.now();
+    $("voicePanel").classList.add("visible");
+    $("voiceBtn").classList.add("recording");
+    $("recordingState").textContent = "Recording";
+    state.recordingTimer = setInterval(() => {
+      $("recordingDuration").textContent = ((Date.now() - state.recordingStarted) / 1000).toFixed(1) + "s";
+    }, 100);
+  } catch (err) {
+    addMessage("assistant", "Microphone unavailable.", `<div class="error-card">${escapeHtml(err.message || err)}</div>`);
+  }
+}
+async function stopRecording(submit=true) {
+  if (!state.recording) return;
+  const duration = (Date.now() - state.recordingStarted) / 1000;
+  state.recording = false;
+  clearInterval(state.recordingTimer);
+  $("voicePanel").classList.remove("visible");
+  $("voiceBtn").classList.remove("recording");
+  if (state.audioProcessor) state.audioProcessor.disconnect();
+  if (state.audioSource) state.audioSource.disconnect();
+  if (state.audioStream) state.audioStream.getTracks().forEach(track => track.stop());
+  if (state.audioContext) await state.audioContext.close();
+  const samples = state.audioSamples;
+  state.audioSamples = [];
+  if (!submit || state.cancelRecording) {
+    addMessage("assistant", "Voice recording discarded.");
+    return;
+  }
+  if (duration < 0.35 || !samples.length) {
+    addMessage("assistant", "Recording was empty.", `<div class="error-card">Hold the microphone while speaking, then release to submit.</div>`);
+    return;
+  }
+  try {
+    addMessage("assistant", "Transcribing locally with whisper-cpp...");
+    const result = await transcribeAudio(encodeWav(samples, state.audioSampleRate), duration);
+    if (result.status !== "complete" || !result.transcript) throw new Error(result.error_details || result.error_code || "No transcript returned");
+    addMessage("user", escapeHtml(result.transcript));
+    const data = await api("/api/chat", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({message:result.transcript, input:"voice"})});
+    addMessage("assistant", escapeHtml(data.reply || "No reply returned."), sourcesHtml(data.sources || []));
+    if (data.status === "completed") speakIfEnabled(data.reply || "");
+  } catch (err) {
+    addMessage("assistant", "Voice turn failed.", `<div class="error-card">${escapeHtml(err.message || err)}</div>`);
+  }
 }
 function renderSearchResults(target, results) {
   $(target).innerHTML = results.length ? results.map((r, i) => `
@@ -560,7 +736,18 @@ function showError(target, err) {
   $(target).innerHTML = `<div class="error-card"><strong>Error</strong><div class="small">${escapeHtml(err.message || err)}</div></div>`;
 }
 async function bootstrap() {
+  $("conversationMode").value = ["text", "voice", "listen", "mute"].includes(state.mode) ? state.mode : "text";
   $("tokenInput").value = state.token;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    $("voiceBtn").disabled = true;
+    $("voiceBtn").title = "Microphone recording is unavailable in this browser";
+  }
+  if (!("speechSynthesis" in window)) {
+    $("pauseSpeechBtn").disabled = true;
+    $("resumeSpeechBtn").disabled = true;
+    $("stopSpeechBtn").disabled = true;
+    $("replaySpeechBtn").disabled = true;
+  }
   if (state.token) {
     try {
       await refreshStatus();
@@ -598,6 +785,19 @@ $("chatFile").addEventListener("change", async (event) => {
     await refreshStatus();
   } catch (err) { addMessage("assistant", "Upload failed.", `<div class="error-card">${escapeHtml(err.message)}</div>`); }
 });
+$("conversationMode").addEventListener("change", () => {
+  state.mode = $("conversationMode").value;
+  localStorage.setItem("cogni_conversation_mode", state.mode);
+});
+$("voiceBtn").addEventListener("pointerdown", startRecording);
+$("voiceBtn").addEventListener("pointerup", () => stopRecording(true));
+$("voiceBtn").addEventListener("pointercancel", () => { state.cancelRecording = true; stopRecording(false); });
+$("voiceBtn").addEventListener("contextmenu", event => event.preventDefault());
+$("cancelVoiceBtn").addEventListener("click", () => { state.cancelRecording = true; stopRecording(false); });
+$("pauseSpeechBtn").addEventListener("click", () => { if ("speechSynthesis" in window) window.speechSynthesis.pause(); });
+$("resumeSpeechBtn").addEventListener("click", () => { if ("speechSynthesis" in window) window.speechSynthesis.resume(); });
+$("stopSpeechBtn").addEventListener("click", stopSpeech);
+$("replaySpeechBtn").addEventListener("click", () => speakIfEnabled(state.lastSpokenText));
 $("captureBtn").addEventListener("click", async () => {
   const text = $("captureText").value.trim();
   if (!text) return;
@@ -639,7 +839,7 @@ bootstrap();
 
 SERVICE_WORKER = """
 const CACHE = "cogni-life-os-shell-v1";
-const SHELL = ["/", "/manifest.json", "/icon.svg"];
+const SHELL = ["/", "/manifest.json", "/static/branding/cogni-logo.jpeg", "/static/branding/cogni-chat-new-logo-round.ico", "/static/icons/cogni-pwa-192.jpg"];
 self.addEventListener("install", event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)));
   self.skipWaiting();
@@ -659,7 +859,7 @@ self.addEventListener("fetch", event => {
 });
 """
 
-ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="96" fill="#0b6f68"/><path d="M256 88c76 38 124 96 124 164 0 82-60 142-124 172-64-30-124-90-124-172 0-68 48-126 124-164Z" fill="#f7f4ec"/><path d="M256 142c42 34 66 72 66 113 0 43-25 78-66 106-41-28-66-63-66-106 0-41 24-79 66-113Z" fill="#7d4f95"/><path d="M256 190c21 21 32 43 32 66s-11 44-32 62c-21-18-32-39-32-62s11-45 32-66Z" fill="#f0bf53"/></svg>"""
+STATIC_ROOT = Path(__file__).resolve().parent / "static"
 
 
 def manifest() -> dict:
@@ -674,7 +874,9 @@ def manifest() -> dict:
         "background_color": "#f6f7f2",
         "theme_color": "#0b6f68",
         "icons": [
-            {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}
+            {"src": "/static/branding/cogni-chat-new-logo-round.ico", "sizes": "16x16 32x32", "type": "image/x-icon", "purpose": "any"},
+            {"src": "/static/icons/cogni-pwa-192.jpg", "sizes": "192x192", "type": "image/jpeg", "purpose": "any maskable"},
+            {"src": "/static/icons/cogni-pwa-512.jpg", "sizes": "512x512", "type": "image/jpeg", "purpose": "any maskable"},
         ],
     }
 
@@ -703,14 +905,89 @@ def app_status(settings: Settings, vault: Vault, index: Index, host_header: str 
         "index": index_health,
         "safe_operations": {"status": "confirmation required for proposed writes", "quarantine": "enabled"},
         "features": {
-            "voice_notes": False,
+            "voice_notes": True,
             "video": False,
             "remote_access": not loopback_only,
-            "live_model_chat": False,
+            "live_model_chat": True,
             "file_upload": True,
             "offline_shell": True,
         },
+        "voice": voice_status(),
     }
+
+
+def voice_status() -> dict:
+    whisper = shutil.which("whisper-cli")
+    stt_ready = bool(whisper and WHISPER_MODEL.exists())
+    return {
+        "stt": {
+            "provider": "whisper-cpp",
+            "status": "ready" if stt_ready else "unavailable",
+            "engine": whisper,
+            "model": str(WHISPER_MODEL),
+            "cloud": False,
+            "error": None if stt_ready else ("whisper-cli is not installed" if not whisper else f"missing model: {WHISPER_MODEL}"),
+        },
+        "tts": {
+            "provider": "browser speechSynthesis",
+            "status": "browser_fallback",
+            "cloud": False,
+            "local_engine": None,
+            "note": "Playback uses the browser/platform voice; Cogni-Brain does not generate audio.",
+        },
+    }
+
+
+def transcribe_audio(payload: dict, settings: Settings) -> dict:
+    raw = base64.b64decode(payload["data_base64"], validate=True)
+    if len(raw) > settings.max_upload_bytes:
+        raise ValueError("upload limit exceeded")
+    result = extract(raw, payload.get("filename", "voice.wav"))
+    data = result.to_dict()
+    data["transcript"] = result.extracted_text
+    data["preserved"] = False
+    data["cloud"] = False
+    return data
+
+
+def chat_turn(settings: Settings, index: Index, payload: dict) -> dict:
+    message = str(payload.get("message", "")).strip()
+    if not message:
+        raise ValueError("message is required")
+    sources = index.search(message)
+    context = "\n".join(f"[{i + 1}] {item['title']} ({item['path']})" for i, item in enumerate(sources[:5]))
+    messages = [
+        {
+            "role": "system",
+            "content": "You are Cogni-Brain for Cogni Life OS. Answer conversationally. Use only supplied vault context for personal facts. Do not fabricate citations. Keep citations in text when useful.",
+        },
+        {"role": "user", "content": f"Vault context:\n{context or 'No matching vault sources.'}\n\nUser message:\n{message}"},
+    ]
+    try:
+        raw = chat(settings, messages, max_tokens=700)
+        reply = raw.get("choices", [{}])[0].get("message", {}).get("content") or ""
+        return {"status": "completed", "reply": reply.strip() or "Cogni-Brain returned an empty reply.", "sources": sources, "model": settings.model_name, "input": payload.get("input", "text")}
+    except Exception as exc:
+        fallback = "Cogni-Brain is not reachable from this local service. I found vault sources you can inspect below." if sources else "Cogni-Brain is not reachable from this local service, and I found no matching vault sources."
+        return {"status": "unavailable", "reply": fallback, "sources": sources, "model": settings.model_name, "detail": f"{type(exc).__name__}: {exc}", "input": payload.get("input", "text")}
+
+
+def read_static(relative: str) -> tuple[bytes, str]:
+    safe = relative.lstrip("/").replace("\\", "/")
+    if ".." in safe.split("/"):
+        raise FileNotFoundError(relative)
+    path = STATIC_ROOT / safe
+    if not path.is_file():
+        raise FileNotFoundError(relative)
+    suffix = path.suffix.lower()
+    content_type = {
+        ".jpeg": "image/jpeg",
+        ".jpg": "image/jpeg",
+        ".ico": "image/x-icon",
+        ".png": "image/png",
+        ".svg": "image/svg+xml",
+    }.get(suffix, "application/octet-stream")
+    return path.read_bytes(), content_type
 
 
 def list_tasks(vault: Vault, *, limit: int = 25) -> list[dict]:
@@ -947,10 +1224,14 @@ def make_handler(settings: Settings):
                 self.end_headers()
                 self.wfile.write(body)
                 return
-            if parsed.path == "/icon.svg":
-                body = ICON_SVG.encode("utf-8")
+            if parsed.path.startswith("/static/"):
+                try:
+                    body, content_type = read_static(parsed.path[len("/static/") :])
+                except FileNotFoundError:
+                    self._json(404, {"error": "not_found"})
+                    return
                 self.send_response(200)
-                self.send_header("Content-Type", "image/svg+xml")
+                self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Cache-Control", "public, max-age=86400")
                 self.end_headers()
@@ -1006,6 +1287,14 @@ def make_handler(settings: Settings):
                     payload = self._read_json()
                     result = handle_upload(vault, index, settings, payload)
                     self._json(200, result)
+                    return
+                if parsed.path == "/api/transcribe":
+                    payload = self._read_json()
+                    self._json(200, transcribe_audio(payload, settings))
+                    return
+                if parsed.path == "/api/chat":
+                    payload = self._read_json()
+                    self._json(200, chat_turn(settings, index, payload))
                     return
                 if parsed.path == "/api/evaluate":
                     self._json(200, run_eval(settings, live_model=False))
