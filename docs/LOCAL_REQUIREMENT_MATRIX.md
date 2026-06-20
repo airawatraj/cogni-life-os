@@ -17,10 +17,10 @@
 | 10 | Video understanding | `tools.py` | none | residual risks | local | RESIDUAL_RISK | intentionally unsupported/fail-closed |
 | 11 | Durable bounded agent state and restart recovery | `durable_agent.py` | `test_durable_agent.py` | deterministic tests | local | PASS | model-loop integration remains conservative |
 | 13 | Typed tools with real local behavior | `tools.py` | `test_tools.py` | deterministic tests | local | PASS | video remains unsupported |
-| 16 | Retrieval and rebuildable indexes | `indexer.py`, `retrieval_eval.py` | `test_retrieval_eval.py` | retrieval evidence | local | PASS | benchmark synthetic but includes scale gates |
-| 20 | Live Cogni-Brain contract | `model_contract.py` | `test_model_contract.py` plus live evidence | `.cogni/local-candidate-evidence-v3/live-model-evaluation.json` | live | FAIL | DGX endpoint returned reasoning-only responses for 7/8 scenarios; no final `content` to validate |
+| 16 | Retrieval and rebuildable indexes | `indexer.py`, `retrieval_eval.py` | `test_retrieval_eval.py` plus 10k/50k/100k benchmark | `.cogni/local-candidate-evidence-v4/retrieval-10k-50k-100k.json` | local | PASS | benchmark is synthetic but includes aliases, paraphrases, stale/current facts, distractors, and scale gates |
+| 20 | Live Cogni-Brain contract | `model_contract.py` | `test_model_contract.py` plus live evidence | `.cogni/local-candidate-evidence-v4/live-model-evaluation.json`, `.cogni/local-candidate-evidence-v4/endpoint-discovery.json` | live | PASS | final-content mode depends on vLLM/Qwen parameters `reasoning_effort=none` and `chat_template_kwargs.enable_thinking=false` |
 | 22 | Backup and full restore rehearsal | `backup.py` | `test_backup_restore.py` | deterministic evaluation | local | PASS | none |
-| 20/21 | Soak, concurrency, resource stability | `soak.py`, `indexer.py` | `test_soak.py`, `test_resource_cleanup.py` | soak evidence | local | PASS | evidence duration controlled by command env |
+| 20/21 | Soak, concurrency, resource stability | `soak.py`, `indexer.py` | `test_soak.py`, `test_resource_cleanup.py` | `.cogni/local-candidate-evidence-v4/soak-120s.json`, `.cogni/local-candidate-evidence-v4/sqlite-resource-tests.txt` | local | PASS | evidence duration controlled by command env |
 | 23 | Accurate docs and residual risk register | `docs/*` | evidence bundle listing | bundle | local | PASS | docs must be updated with future changes |
 | 24 | Physical iPhone validation | none | none | deferred gates | external | DEFERRED_EXTERNAL_GATE | requires device |
 | 24 | Remote private transport | none | none | deferred gates | external | DEFERRED_EXTERNAL_GATE | requires TLS/network deployment |
