@@ -15,7 +15,7 @@ class Settings:
     runtime_path: Path = PROJECT_ROOT / ".cogni" / "runtime"
     backup_path: Path = PROJECT_ROOT / ".cogni" / "backups"
     evidence_path: Path = PROJECT_ROOT / ".cogni" / "evaluation-evidence"
-    model_base_url: str = os.environ.get("COGNI_MODEL_BASE_URL", "http://192.168.20.91:8000/v1")
+    model_base_url: str = os.environ.get("COGNI_MODEL_BASE_URL", "http://127.0.0.1:8000/v1")
     model_api_key: str = os.environ.get("COGNI_MODEL_API_KEY", "local")
     model_name: str = os.environ.get("COGNI_MODEL_NAME", "Cogni-Brain")
     service_token: str = os.environ.get("COGNI_SERVICE_TOKEN", "dev-local-change-me")

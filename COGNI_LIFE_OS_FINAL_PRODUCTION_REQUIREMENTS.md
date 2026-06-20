@@ -33,7 +33,7 @@ The system must minimise manual review and must not create another inbox that re
 
 - Hardware: NVIDIA DGX Spark
 - Served model: `Cogni-Brain`
-- Endpoint: `http://192.168.20.91:8000/v1`
+- Endpoint: `http://127.0.0.1:8000/v1`
 - API key: `local`
 
 ### User devices
