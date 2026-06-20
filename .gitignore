@@ -81,3 +81,12 @@ Thumbs.db
 *.tiff
 *.pdf
 *.docx
+
+# Allow committed project assets and README screenshots
+
+!assets/
+!assets/**/*.jpg
+!assets/**/*.jpeg
+!assets/**/*.png
+!assets/**/*.ico
+!assets/**/*.svg
