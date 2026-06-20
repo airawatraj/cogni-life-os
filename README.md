@@ -1,9 +1,9 @@
 # Cogni Life OS
 
-Local-first Life OS scaffold backed by an Obsidian-compatible Markdown vault.
+Local-first Life OS backed by an Obsidian-compatible Markdown vault.
 
-This session uses only the fresh local development vault at `vaults/dev-vault`.
-iCloud and production vaults are intentionally out of scope until production gates pass.
+This branch uses only the fresh local disposable vault at `local_test_vault`.
+iCloud, production vault activation, physical iPhone validation, remote private transport, and cross-device conflict testing remain deferred gates.
 
 ## Commands
 
@@ -21,10 +21,10 @@ python3 -m cogni_life_os capture-text "Remember to renew insurance next week"
 
 Defaults are in `cogni_life_os/config.py`.
 
-- Development vault: `vaults/dev-vault`
+- Development vault: `local_test_vault`
 - Runtime cache/indexes: `.cogni/runtime`
 - Backups: `.cogni/backups`
 - Model endpoint: `http://192.168.20.91:8000/v1`
 - Model API key: `local`
 
-The PWA is private and local by default. It requires the service token printed at startup or set with `COGNI_SERVICE_TOKEN`.
+The local PWA/API binds to loopback by default and requires `COGNI_SERVICE_TOKEN` or an issued local token.
