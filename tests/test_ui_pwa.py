@@ -74,8 +74,41 @@ class UiPwaTests(unittest.TestCase):
         self.assertIn("speechSynthesis", APP_HTML)
         self.assertIn("@media (max-width: 860px)", APP_HTML)
         self.assertIn("viewport-fit=cover", APP_HTML)
+        self.assertIn("grid-template-rows: auto auto minmax(0, 1fr) auto auto", APP_HTML)
+        self.assertIn(".playback-bar {", APP_HTML)
+        self.assertNotIn('class="voice-panel visible" id="playbackPanel"', APP_HTML)
         self.assertNotIn("<h2>Dashboard</h2>", APP_HTML)
         self.assertNotIn("benchmark", APP_HTML.lower())
+
+    def test_media_controls_use_accessible_inline_svg_icons(self):
+        controls = [
+            'aria-label="Attach image or document"',
+            'aria-label="Hold to talk"',
+            'aria-label="Send"',
+            'aria-label="Pause speech"',
+            'aria-label="Resume speech"',
+            'aria-label="Stop speech"',
+            'aria-label="Replay speech"',
+            'aria-label="Cancel recording"',
+            'aria-label="Refresh status"',
+        ]
+        for label in controls:
+            self.assertIn(label, APP_HTML)
+        self.assertGreaterEqual(APP_HTML.count("<svg viewBox="), len(controls))
+        self.assertIn('id="sendBtn"', APP_HTML)
+        self.assertIn("ICON_STOP_GENERATION", APP_HTML)
+        self.assertIn("setSendResponding(true)", APP_HTML)
+
+    def test_playback_controls_visibility_and_recording_states(self):
+        self.assertIn('class="playback-bar" id="playbackPanel"', APP_HTML)
+        self.assertIn('showPlaybackControls(true)', APP_HTML)
+        self.assertIn('$("playbackPanel").classList.toggle("visible"', APP_HTML)
+        self.assertIn('.icon-btn.recording', APP_HTML)
+        self.assertIn('.icon-btn.processing', APP_HTML)
+        self.assertIn('.icon-btn.error', APP_HTML)
+        self.assertIn('setMicState("recording")', APP_HTML)
+        self.assertIn('setMicState("processing")', APP_HTML)
+        self.assertIn('setMicState("error")', APP_HTML)
 
     def test_pwa_manifest_and_offline_shell(self):
         data = manifest()

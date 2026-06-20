@@ -166,7 +166,7 @@ APP_HTML = """<!doctype html>
       padding: 14px 16px; border-bottom: 1px solid var(--line);
       display: flex; justify-content: space-between; gap: 10px; align-items: center;
     }
-    .messages { min-height: 0; overflow: auto; padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+    .messages { min-height: 0; overflow: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; align-content: start; }
     .msg { display: flex; flex-direction: column; gap: 8px; max-width: min(760px, 88%); }
     .msg.user { align-self: flex-end; align-items: flex-end; }
     .bubble {
@@ -192,9 +192,17 @@ APP_HTML = """<!doctype html>
       border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
       border-radius: 8px; width: 46px; height: 46px; display: grid; place-items: center; cursor: pointer;
     }
+    .icon-btn svg, .send svg, .mini-btn svg { width: 20px; height: 20px; stroke: currentColor; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+    .icon-btn:focus-visible, .send:focus-visible, .mini-btn:focus-visible, .button:focus-visible, .nav a:focus-visible, .mobile-nav a:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--brand) 55%, white);
+      outline-offset: 2px;
+    }
     .icon-btn[disabled] { opacity: .45; cursor: not-allowed; }
     .icon-btn.recording { background: var(--bad); border-color: color-mix(in srgb, #db5b51 48%, var(--line)); }
+    .icon-btn.processing { background: var(--warn); border-color: color-mix(in srgb, #d59f1a 48%, var(--line)); }
+    .icon-btn.error { background: var(--bad); border-color: color-mix(in srgb, #db5b51 68%, var(--line)); color: #8f2922; }
     .send { background: var(--brand); color: white; border-color: var(--brand); }
+    .send.responding { background: #34413f; border-color: #34413f; }
     .voice-panel {
       border-top: 1px solid var(--line);
       padding: 8px 12px;
@@ -207,8 +215,23 @@ APP_HTML = """<!doctype html>
     .meter { height: 8px; min-width: 90px; flex: 1; border-radius: 999px; background: var(--panel-2); overflow: hidden; border: 1px solid var(--line); }
     .meter > span { display: block; height: 100%; width: 0%; background: var(--brand); }
     .mode-select { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); padding: 8px; }
+    .playback-bar {
+      border-top: 1px solid var(--line);
+      padding: 8px 12px;
+      display: none;
+      gap: 10px;
+      align-items: center;
+      justify-content: flex-end;
+      background: var(--panel);
+    }
+    .playback-bar.visible { display: flex; }
+    .playback-label { margin-right: auto; color: var(--muted); font-size: 13px; }
     .speech-controls { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
-    .mini-btn { border: 1px solid var(--line); background: var(--panel-2); color: var(--text); min-height: 34px; border-radius: 8px; padding: 6px 9px; cursor: pointer; }
+    .mini-btn {
+      border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
+      min-width: 44px; width: 44px; min-height: 44px; height: 44px;
+      border-radius: 8px; padding: 0; cursor: pointer; display: grid; place-items: center;
+    }
     textarea, input {
       width: 100%; border: 1px solid var(--line); border-radius: 8px;
       background: var(--panel); color: var(--text); padding: 12px 13px;
@@ -256,6 +279,8 @@ APP_HTML = """<!doctype html>
       .chat-shell { height: calc(100dvh - 137px - env(safe-area-inset-bottom)); border: 0; border-radius: 0; box-shadow: none; }
       .chat-head { padding: 12px 14px; }
       .messages { padding: 14px; }
+      .playback-bar { padding: 6px 10px; justify-content: flex-end; }
+      .playback-label { display: none; }
       .msg { max-width: 92%; }
       .panel-grid { grid-template-columns: 1fr; }
       .mobile-nav {
@@ -303,7 +328,9 @@ APP_HTML = """<!doctype html>
   <main class="main">
     <header class="topbar">
       <div class="brand"><img class="compact-logo" src="/static/branding/cogni-chat-new-logo-round.ico" alt="Cogni"><div><h1>Cogni Life OS</h1><p id="mobileSub">Locked</p></div></div>
-      <button class="icon-btn" id="refreshBtn" title="Refresh status" aria-label="Refresh status">R</button>
+      <button class="icon-btn" id="refreshBtn" title="Refresh status" aria-label="Refresh status">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M18.5 9A7 7 0 0 0 6.1 6.1L4 8"/><path d="M5.5 15A7 7 0 0 0 17.9 17.9L20 16"/></svg>
+      </button>
     </header>
     <div class="view">
       <section id="chat" class="screen active" data-title="Chat">
@@ -323,13 +350,21 @@ APP_HTML = """<!doctype html>
               <div class="pill"><span class="dot warn" id="chatModelDot"></span><span id="activeModel">Model unavailable</span></div>
             </div>
           </div>
-          <div class="voice-panel visible" id="playbackPanel">
-            <span class="small muted">Spoken replies use browser speechSynthesis when enabled.</span>
+          <div class="playback-bar" id="playbackPanel" aria-live="polite">
+            <span class="playback-label" id="playbackLabel">Spoken reply controls</span>
             <div class="speech-controls">
-              <button class="mini-btn" id="pauseSpeechBtn" type="button">Pause</button>
-              <button class="mini-btn" id="resumeSpeechBtn" type="button">Resume</button>
-              <button class="mini-btn" id="stopSpeechBtn" type="button">Stop</button>
-              <button class="mini-btn" id="replaySpeechBtn" type="button">Replay</button>
+              <button class="mini-btn" id="pauseSpeechBtn" type="button" title="Pause speech" aria-label="Pause speech">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14"/><path d="M16 5v14"/></svg>
+              </button>
+              <button class="mini-btn" id="resumeSpeechBtn" type="button" title="Resume speech" aria-label="Resume speech">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+              </button>
+              <button class="mini-btn" id="stopSpeechBtn" type="button" title="Stop speech" aria-label="Stop speech">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10H7z"/></svg>
+              </button>
+              <button class="mini-btn" id="replaySpeechBtn" type="button" title="Replay speech" aria-label="Replay speech">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v6h6"/></svg>
+              </button>
             </div>
           </div>
           <div class="messages" id="messages" aria-live="polite"></div>
@@ -337,15 +372,22 @@ APP_HTML = """<!doctype html>
             <strong id="recordingState">Recording</strong>
             <span class="small muted" id="recordingDuration">0.0s</span>
             <div class="meter" aria-label="Audio level"><span id="audioLevel"></span></div>
-            <button class="mini-btn" id="cancelVoiceBtn" type="button">Cancel</button>
+            <button class="mini-btn" id="cancelVoiceBtn" type="button" title="Cancel recording" aria-label="Cancel recording">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+            </button>
           </div>
           <form class="composer" id="chatForm">
             <label class="icon-btn" title="Attach image or document" aria-label="Attach image or document">
-              +<input class="sr-only" id="chatFile" type="file" accept="image/*,.pdf,.txt,.md,.docx">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21.4 11.6-8.8 8.8a6 6 0 0 1-8.5-8.5l9.6-9.6a4 4 0 0 1 5.7 5.7l-9.6 9.6a2 2 0 0 1-2.8-2.8l8.8-8.8"/></svg>
+              <input class="sr-only" id="chatFile" type="file" accept="image/*,.pdf,.txt,.md,.docx">
             </label>
-            <button class="icon-btn" id="voiceBtn" type="button" title="Hold to talk">Mic</button>
+            <button class="icon-btn" id="voiceBtn" type="button" title="Hold to talk" aria-label="Hold to talk">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 18v3"/><path d="M8 21h8"/></svg>
+            </button>
             <textarea id="chatInput" rows="1" placeholder="Ask Cogni..." autocomplete="off"></textarea>
-            <button class="send" type="submit" title="Send" aria-label="Send">Send</button>
+            <button class="send" id="sendBtn" type="submit" title="Send" aria-label="Send">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13"/><path d="m22 2-7 20-4-9-9-4z"/></svg>
+            </button>
           </form>
         </div>
       </section>
@@ -461,10 +503,13 @@ const state = {
   audioSamples: [],
   audioSampleRate: 16000,
   lastSpokenText: "",
-  muted: false
+  muted: false,
+  modelResponding: false
 };
 const $ = (id) => document.getElementById(id);
 const views = ["chat", "capture", "knowledge", "tasks", "settings", "advanced"];
+const ICON_SEND = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13"/><path d="m22 2-7 20-4-9-9-4z"/></svg>';
+const ICON_STOP_GENERATION = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10H7z"/></svg>';
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, ch => {
     if (ch === "&") return "&amp;";
@@ -564,12 +609,17 @@ function proposalHtml(text) {
 }
 async function sendChat(text) {
   addMessage("user", escapeHtml(text));
-  const data = await api("/api/chat", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({message:text})});
-  addMessage("assistant", escapeHtml(data.reply || "No reply returned."), sourcesHtml(data.sources || []));
-  if (data.status !== "completed") {
-    addMessage("assistant", escapeHtml(data.detail || "Cogni-Brain is unavailable."), proposalHtml(text));
-  } else {
-    speakIfEnabled(data.reply || "");
+  setSendResponding(true);
+  try {
+    const data = await api("/api/chat", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({message:text})});
+    addMessage("assistant", escapeHtml(data.reply || "No reply returned."), sourcesHtml(data.sources || []));
+    if (data.status !== "completed") {
+      addMessage("assistant", escapeHtml(data.detail || "Cogni-Brain is unavailable."), proposalHtml(text));
+    } else {
+      speakIfEnabled(data.reply || "");
+    }
+  } finally {
+    setSendResponding(false);
   }
 }
 async function searchVault(query) {
@@ -609,15 +659,43 @@ function speechText(text) {
 function stopSpeech() {
   if ("speechSynthesis" in window) window.speechSynthesis.cancel();
 }
+function showPlaybackControls(visible=true) {
+  $("playbackPanel").classList.toggle("visible", visible && Boolean(state.lastSpokenText));
+}
+function setSendResponding(isResponding) {
+  state.modelResponding = isResponding;
+  const button = $("sendBtn");
+  button.classList.toggle("responding", isResponding);
+  button.title = isResponding ? "Generating response" : "Send";
+  button.setAttribute("aria-label", isResponding ? "Generating response" : "Send");
+  button.innerHTML = isResponding ? ICON_STOP_GENERATION : ICON_SEND;
+}
+function setMicState(name) {
+  const button = $("voiceBtn");
+  button.classList.remove("recording", "processing", "error");
+  if (name !== "idle") button.classList.add(name);
+  const labels = {
+    idle: "Hold to talk",
+    recording: "Recording. Release to submit",
+    processing: "Processing voice",
+    error: "Microphone or transcription error"
+  };
+  button.title = labels[name] || labels.idle;
+  button.setAttribute("aria-label", labels[name] || labels.idle);
+}
 function speakIfEnabled(text) {
   state.lastSpokenText = text || state.lastSpokenText;
   if (!canSpeak()) return;
+  showPlaybackControls(true);
   stopSpeech();
   const clean = speechText(text);
   if (!clean) return;
   const utterance = new SpeechSynthesisUtterance(clean);
   utterance.rate = 1;
   utterance.pitch = 1;
+  utterance.onstart = () => showPlaybackControls(true);
+  utterance.onend = () => showPlaybackControls(true);
+  utterance.onerror = () => showPlaybackControls(true);
   window.speechSynthesis.speak(utterance);
 }
 function encodeWav(samples, sampleRate) {
@@ -663,12 +741,14 @@ async function startRecording(event) {
     state.audioContext = context; state.audioSource = source; state.audioProcessor = processor; state.audioStream = stream;
     state.recording = true; state.recordingStarted = Date.now();
     $("voicePanel").classList.add("visible");
-    $("voiceBtn").classList.add("recording");
+    setMicState("recording");
     $("recordingState").textContent = "Recording";
     state.recordingTimer = setInterval(() => {
       $("recordingDuration").textContent = ((Date.now() - state.recordingStarted) / 1000).toFixed(1) + "s";
     }, 100);
   } catch (err) {
+    setMicState("error");
+    setTimeout(() => setMicState("idle"), 1800);
     addMessage("assistant", "Microphone unavailable.", `<div class="error-card">${escapeHtml(err.message || err)}</div>`);
   }
 }
@@ -678,7 +758,7 @@ async function stopRecording(submit=true) {
   state.recording = false;
   clearInterval(state.recordingTimer);
   $("voicePanel").classList.remove("visible");
-  $("voiceBtn").classList.remove("recording");
+  setMicState("idle");
   if (state.audioProcessor) state.audioProcessor.disconnect();
   if (state.audioSource) state.audioSource.disconnect();
   if (state.audioStream) state.audioStream.getTracks().forEach(track => track.stop());
@@ -690,19 +770,28 @@ async function stopRecording(submit=true) {
     return;
   }
   if (duration < 0.35 || !samples.length) {
+    setMicState("error");
+    setTimeout(() => setMicState("idle"), 1800);
     addMessage("assistant", "Recording was empty.", `<div class="error-card">Hold the microphone while speaking, then release to submit.</div>`);
     return;
   }
   try {
+    setMicState("processing");
     addMessage("assistant", "Transcribing locally with whisper-cpp...");
     const result = await transcribeAudio(encodeWav(samples, state.audioSampleRate), duration);
     if (result.status !== "complete" || !result.transcript) throw new Error(result.error_details || result.error_code || "No transcript returned");
+    setMicState("idle");
     addMessage("user", escapeHtml(result.transcript));
+    setSendResponding(true);
     const data = await api("/api/chat", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({message:result.transcript, input:"voice"})});
     addMessage("assistant", escapeHtml(data.reply || "No reply returned."), sourcesHtml(data.sources || []));
     if (data.status === "completed") speakIfEnabled(data.reply || "");
   } catch (err) {
+    setMicState("error");
+    setTimeout(() => setMicState("idle"), 1800);
     addMessage("assistant", "Voice turn failed.", `<div class="error-card">${escapeHtml(err.message || err)}</div>`);
+  } finally {
+    setSendResponding(false);
   }
 }
 function renderSearchResults(target, results) {
@@ -770,6 +859,7 @@ $("loginForm").addEventListener("submit", async (event) => {
 });
 $("chatForm").addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (state.modelResponding) return;
   const text = $("chatInput").value.trim();
   if (!text) return;
   $("chatInput").value = "";
