@@ -13,14 +13,14 @@ Status: local production candidate, not production or iCloud activated.
 - Rebuildable SQLite full-text index
 - Integrity scan
 - Versioned backup with hash verification
-- Private local PWA token gate
+- Private local API token gate
 - Live DGX endpoint reached after local-network approval on 2026-06-20
-- Live Cogni-Brain final-content contract passes with `reasoning_effort=none`, `chat_template_kwargs.enable_thinking=false`, and JSON response mode where needed
-- Realistic retrieval benchmarks pass at 10k, 50k, and 100k local synthetic notes
+- Live Cogni-Brain adversarial, routing, final-content, and actual tool-call contract passes with `reasoning_effort=none`, `chat_template_kwargs.enable_thinking=false`, and JSON response mode where needed
+- Held-out retrieval benchmarks pass at 10k, 50k, and 100k local synthetic notes
 
 ## Live Model Observation
 
-Endpoint discovery reports `Cogni-Brain` served by vLLM with root `Intel/Qwen3.5-122B-A10B-int4-AutoRound` and `max_model_len` 262144. The v4 live contract evidence shows 8/8 scenarios passing when reasoning is disabled and JSON mode is used for structured responses.
+Endpoint discovery reports `Cogni-Brain` served by vLLM with root `Intel/Qwen3.5-122B-A10B-int4-AutoRound` and `max_model_len` 262144. The v5 live contract evidence shows 10/10 scenarios passing, including prompt-injection quarantine, confidentiality refusal, personal/work routing, and actual OpenAI-compatible `tool_calls`.
 
 ## Residual Risks
 
