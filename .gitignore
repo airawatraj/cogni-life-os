@@ -1,0 +1,83 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.cert
+*.p12
+*.pfx
+*token*
+*secret*
+*credential*
+
+# Python/runtime caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local Cogni runtime, evidence, models, and backups
+.cogni/
+codex_local_candidate_review*.zip
+
+# Disposable/local vaults and source captures
+local_test_vault/
+vaults/
+**/10-sources/attachments/
+**/10-sources/text/
+
+# Databases, indexes, corpora
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+benchmark/
+generated_corpora/
+
+# Archives and backups
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.bak
+*.backup
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+# Model binaries and large local artifacts
+*.bin
+*.gguf
+*.safetensors
+*.onnx
+*.pt
+*.pth
+
+# Local media/source captures
+*.wav
+*.mp3
+*.m4a
+*.mp4
+*.mov
+*.jpg
+*.jpeg
+*.png
+*.tif
+*.tiff
+*.pdf
+*.docx

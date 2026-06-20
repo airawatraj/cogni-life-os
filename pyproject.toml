@@ -1,0 +1,12 @@
+[project]
+name = "cogni-life-os"
+version = "0.1.0"
+description = "Local sovereign Life OS service backed by an Obsidian-compatible Markdown vault."
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+cogni = "cogni_life_os.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
