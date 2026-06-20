@@ -74,7 +74,7 @@ class Index:
                         title,
                         fm.get("type", ""),
                         fm.get("id", ""),
-                        fm.get("tags", ""),
+                        _frontmatter_text(fm.get("tags", "")),
                         body,
                         sha256_bytes(raw.encode("utf-8")),
                         utc_now(),
@@ -100,7 +100,7 @@ class Index:
                     title,
                     fm.get("type", ""),
                     fm.get("id", ""),
-                    fm.get("tags", ""),
+                    _frontmatter_text(fm.get("tags", "")),
                     body,
                     sha256_bytes(raw.encode("utf-8")),
                     utc_now(),
@@ -115,11 +115,12 @@ class Index:
         if query.count('"') % 2:
             raise ValueError("unterminated quoted search phrase")
         terms = _terms(query)
+        expanded_terms = _expanded_terms(terms)
         phrase = " ".join(terms)
         with self.connection() as conn:
             rows = conn.execute(
                 "select notes.path, notes.title, notes.kind, notes.note_id, notes.body, bm25(notes_fts) as rank from notes_fts join notes using(path) where notes_fts match ? order by rank limit ?",
-                (_fts_query(terms), candidate_limit),
+                (_fts_query(expanded_terms), candidate_limit),
             ).fetchall()
         scored = []
         seen = set()
@@ -128,11 +129,11 @@ class Index:
             if path in seen:
                 continue
             seen.add(path)
-            score, reasons = _score(query, terms, phrase, title or "", body or "", float(rank or 0))
+            score, reasons = _score(query, terms, expanded_terms, phrase, title or "", body or "", float(rank or 0))
             scored.append((score, {"path": path, "title": title, "type": kind, "id": note_id, "score": round(score, 4), "reasons": reasons}))
         scored.sort(key=lambda item: item[0], reverse=True)
         if len(terms) > 1 and scored:
-            threshold = max(8.0, scored[0][0] * 0.5)
+            threshold = max(8.0, scored[0][0] * 0.7)
             scored = [item for item in scored if item[0] >= threshold]
         return [item for _score_value, item in scored[:limit]]
 
@@ -143,7 +144,44 @@ class Index:
 
 
 def _terms(query: str) -> list[str]:
-    return [term for term in re.findall(r"[a-z0-9]+", query.lower()) if term not in {"the", "a", "an", "and", "or"}]
+    return [term for term in re.findall(r"[a-z0-9]+", query.lower()) if term not in {"the", "a", "an", "and", "or", "for", "to", "of"}]
+
+
+def _frontmatter_text(value) -> str:
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, sort_keys=True)
+    return str(value)
+
+
+def _expanded_terms(terms: list[str]) -> list[str]:
+    expansions = {
+        "boundary": ["scope", "domain"],
+        "car": ["vehicle", "auto"],
+        "conflicting": ["contradiction", "conflict"],
+        "connect": ["comparison", "relationship"],
+        "cover": ["protection", "policy"],
+        "customer": ["client"],
+        "doctor": ["health", "medical"],
+        "external": ["outside", "public"],
+        "job": ["work", "client"],
+        "old": ["ancient"],
+        "new": ["modern"],
+        "private": ["personal", "confidential"],
+        "release": ["publish", "external"],
+        "renew": ["renewal", "rollover"],
+        "renewal": ["renew", "rollover"],
+        "safe": ["risk"],
+        "schedule": ["calendar", "date"],
+        "workplace": ["work", "client"],
+    }
+    expanded: list[str] = []
+    for term in terms:
+        if term not in expanded:
+            expanded.append(term)
+        for extra in expansions.get(term, []):
+            if extra not in expanded:
+                expanded.append(extra)
+    return expanded
 
 
 def _fts_query(terms: list[str]) -> str:
@@ -152,7 +190,7 @@ def _fts_query(terms: list[str]) -> str:
     return " OR ".join(f'"{term}"' for term in terms)
 
 
-def _score(query: str, terms: list[str], phrase: str, title: str, body: str, bm25_rank: float) -> tuple[float, list[str]]:
+def _score(query: str, terms: list[str], expanded_terms: list[str], phrase: str, title: str, body: str, bm25_rank: float) -> tuple[float, list[str]]:
     title_l = title.lower()
     body_l = body.lower()
     reasons: list[str] = []
@@ -165,11 +203,15 @@ def _score(query: str, terms: list[str], phrase: str, title: str, body: str, bm2
         reasons.append("exact_body_phrase")
     title_hits = sum(1 for term in terms if term in title_l)
     body_hits = sum(1 for term in terms if term in body_l)
+    semantic_hits = sum(1 for term in expanded_terms if term not in terms and term in f"{title_l}\n{body_l}")
     if terms and title_hits == len(terms):
         score += 12
         reasons.append("all_terms_in_title")
     score += title_hits * 4
     score += body_hits * 1.5
+    if semantic_hits:
+        score += semantic_hits * 1.2
+        reasons.append("semantic_term_match")
     if "alias:" in body_l and any(term in body_l.split("alias:", 1)[1][:160] for term in terms):
         score += 8
         reasons.append("alias_match")

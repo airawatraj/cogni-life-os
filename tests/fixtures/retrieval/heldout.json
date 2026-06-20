@@ -1,0 +1,53 @@
+{
+  "name": "heldout",
+  "queries": [
+    {
+      "id": "heldout_vehicle",
+      "query": "when does the car cover renew next",
+      "challenge": "stale_current",
+      "expected_topics": ["vehicle_renewal"]
+    },
+    {
+      "id": "heldout_concept",
+      "query": "old records tied to new lab trials",
+      "challenge": "conceptual_similarity",
+      "expected_topics": ["ancient_modern"]
+    },
+    {
+      "id": "heldout_nova",
+      "query": "what conflict exists around nova go ahead",
+      "challenge": "contradiction",
+      "expected_topics": ["nova_contradiction"]
+    },
+    {
+      "id": "heldout_atlas",
+      "query": "is atlas a person note or client launch risk",
+      "challenge": "entity_resolution",
+      "expected_topics": ["atlas_work", "atlas_person"]
+    },
+    {
+      "id": "heldout_health",
+      "query": "which doctor follow up belongs to home life",
+      "challenge": "personal_work_scope",
+      "expected_topics": ["personal_health"]
+    },
+    {
+      "id": "heldout_no_answer",
+      "query": "who approved the lunar catering permit",
+      "challenge": "no_answer",
+      "expected_topics": ["no_answer"]
+    },
+    {
+      "id": "heldout_alias",
+      "query": "surya dev calendar item",
+      "challenge": "alias",
+      "expected_topics": ["multilingual_alias"]
+    },
+    {
+      "id": "heldout_confidential",
+      "query": "what customer plan risk should stay at the workplace",
+      "challenge": "personal_work_scope",
+      "expected_topics": ["confidential_work"]
+    }
+  ]
+}

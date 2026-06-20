@@ -1,0 +1,23 @@
+{
+  "name": "tuning",
+  "queries": [
+    {
+      "id": "tune_vehicle",
+      "query": "auto protection date",
+      "challenge": "stale_current",
+      "expected_topics": ["vehicle_renewal"]
+    },
+    {
+      "id": "tune_ancient",
+      "query": "ancient records modern trials",
+      "challenge": "conceptual_similarity",
+      "expected_topics": ["ancient_modern"]
+    },
+    {
+      "id": "tune_work",
+      "query": "customer roadmap workplace risk",
+      "challenge": "personal_work_scope",
+      "expected_topics": ["confidential_work"]
+    }
+  ]
+}
