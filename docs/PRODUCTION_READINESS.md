@@ -14,7 +14,7 @@ Status: local production candidate, not production or iCloud activated.
 - Integrity scan
 - Versioned backup with hash verification
 - Private local API token gate
-- Live DGX endpoint reached after local-network approval on 2026-06-20
+- Local Cogni-Brain endpoint integration verified
 - Live Cogni-Brain adversarial, routing, final-content, and actual tool-call contract passes with `reasoning_effort=none`, `chat_template_kwargs.enable_thinking=false`, and JSON response mode where needed
 - Held-out layered lexical retrieval benchmarks pass at 10k, 50k, and 100k local synthetic notes
 

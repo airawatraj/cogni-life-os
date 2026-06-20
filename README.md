@@ -32,7 +32,7 @@ Cogni Life OS is designed around a different model:
 * Local Cogni-Brain integration
 * Authenticated loopback HTTP API
 * Backup, restore, integrity, and soak testing
-* No LangChain, LangGraph, LiteLLM, or cloud AI dependency
+* No required LangChain, LangGraph, LiteLLM, or cloud AI dependency
 
 ## Architecture
 
