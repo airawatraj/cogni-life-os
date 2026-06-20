@@ -66,7 +66,12 @@ class UiPwaTests(unittest.TestCase):
         self.assertIn("Sources", APP_HTML)
         self.assertIn("Proposed action", APP_HTML)
         self.assertIn('id="voiceBtn" type="button"', APP_HTML)
-        self.assertIn('id="conversationMode"', APP_HTML)
+        self.assertNotIn('id="conversationMode"', APP_HTML)
+        self.assertNotIn('aria-label="Conversation mode"', APP_HTML)
+        self.assertNotIn('<option value="text">Text</option>', APP_HTML)
+        self.assertNotIn('<option value="voice">Voice</option>', APP_HTML)
+        self.assertNotIn('<option value="listen">Listen</option>', APP_HTML)
+        self.assertNotIn('<option value="mute">Mute</option>', APP_HTML)
         self.assertIn("startRecording", APP_HTML)
         self.assertIn("stopRecording", APP_HTML)
         self.assertIn("encodeWav", APP_HTML)
@@ -74,17 +79,20 @@ class UiPwaTests(unittest.TestCase):
         self.assertIn("speechSynthesis", APP_HTML)
         self.assertIn("@media (max-width: 860px)", APP_HTML)
         self.assertIn("viewport-fit=cover", APP_HTML)
-        self.assertIn("grid-template-rows: auto auto minmax(0, 1fr) auto auto", APP_HTML)
+        self.assertIn("grid-template-rows: auto minmax(0, 1fr) auto auto", APP_HTML)
         self.assertIn(".playback-bar {", APP_HTML)
-        self.assertNotIn('class="voice-panel visible" id="playbackPanel"', APP_HTML)
         self.assertNotIn("<h2>Dashboard</h2>", APP_HTML)
         self.assertNotIn("benchmark", APP_HTML.lower())
 
     def test_media_controls_use_accessible_inline_svg_icons(self):
         controls = [
-            'aria-label="Attach image or document"',
+            'aria-label="Attach image"',
+            'aria-label="Attach document"',
             'aria-label="Hold to talk"',
             'aria-label="Send"',
+            'aria-label="Enable spoken replies"',
+            'aria-label="Clear conversation"',
+            'aria-label="Remove selected attachment"',
             'aria-label="Pause speech"',
             'aria-label="Resume speech"',
             'aria-label="Stop speech"',
@@ -98,17 +106,61 @@ class UiPwaTests(unittest.TestCase):
         self.assertIn('id="sendBtn"', APP_HTML)
         self.assertIn("ICON_STOP_GENERATION", APP_HTML)
         self.assertIn("setSendResponding(true)", APP_HTML)
+        self.assertIn('id="chatImage" type="file" accept="image/*" capture="environment"', APP_HTML)
+        self.assertIn('id="chatDocument" type="file"', APP_HTML)
+        self.assertIn("grid-template-columns: auto auto auto minmax(0, 1fr) auto", APP_HTML)
 
     def test_playback_controls_visibility_and_recording_states(self):
-        self.assertIn('class="playback-bar" id="playbackPanel"', APP_HTML)
-        self.assertIn('showPlaybackControls(true)', APP_HTML)
-        self.assertIn('$("playbackPanel").classList.toggle("visible"', APP_HTML)
+        self.assertIn('data-speech-action="pause"', APP_HTML)
+        self.assertIn('data-speech-action="resume"', APP_HTML)
+        self.assertIn('data-speech-action="stop"', APP_HTML)
+        self.assertIn('data-speech-action="replay"', APP_HTML)
+        self.assertIn("PLAYBACK_CONTROLS_HTML", APP_HTML)
         self.assertIn('.icon-btn.recording', APP_HTML)
         self.assertIn('.icon-btn.processing', APP_HTML)
         self.assertIn('.icon-btn.error', APP_HTML)
         self.assertIn('setMicState("recording")', APP_HTML)
         self.assertIn('setMicState("processing")', APP_HTML)
         self.assertIn('setMicState("error")', APP_HTML)
+
+    def test_spoken_reply_preference_and_mute_stop_speech(self):
+        self.assertIn('localStorage.getItem("cogni_spoken_replies")', APP_HTML)
+        self.assertIn('localStorage.setItem("cogni_spoken_replies"', APP_HTML)
+        self.assertIn('localStorage.getItem("cogni_conversation_mode")', APP_HTML)
+        self.assertIn("function setSpeakerEnabled(enabled)", APP_HTML)
+        self.assertIn("if (!state.spokenReplies) stopSpeech();", APP_HTML)
+        self.assertIn('state.spokenReplies ? ICON_SPEAKER_ON : ICON_SPEAKER_MUTED', APP_HTML)
+        self.assertIn('canSpeak()', APP_HTML)
+
+    def test_thinking_indicator_and_cancellation_flow(self):
+        self.assertIn("function thinkingHtml()", APP_HTML)
+        self.assertIn("Cogni is thinking", APP_HTML)
+        self.assertIn("thinkingPulse", APP_HTML)
+        self.assertIn('addMessage("assistant", thinkingHtml(), "", {thinking: true})', APP_HTML)
+        self.assertIn("updateMessage(placeholderId", APP_HTML)
+        self.assertIn("removeMessage(placeholderId)", APP_HTML)
+        self.assertIn("new AbortController()", APP_HTML)
+        self.assertIn("stopPendingRequest()", APP_HTML)
+        self.assertIn('button.setAttribute("aria-label", isResponding ? "Stop generation" : "Send")', APP_HTML)
+
+    def test_image_preview_and_separate_document_upload_flow(self):
+        self.assertIn('class="attachment-preview" id="attachmentPreview"', APP_HTML)
+        self.assertIn('id="attachmentPreviewImage"', APP_HTML)
+        self.assertIn("function setPendingImage(file)", APP_HTML)
+        self.assertIn("URL.createObjectURL(file)", APP_HTML)
+        self.assertIn("function setPendingDocument(file)", APP_HTML)
+        self.assertIn('$("removeAttachmentBtn").addEventListener("click", clearPendingAttachment)', APP_HTML)
+        self.assertIn("messageImageHtml(m.image)", APP_HTML)
+        self.assertIn("imagePayload(attachment.file)", APP_HTML)
+
+    def test_clear_conversation_is_browser_session_only(self):
+        self.assertIn('aria-label="Clear conversation"', APP_HTML)
+        self.assertIn("function clearConversation()", APP_HTML)
+        self.assertIn('confirm("Clear the current browser conversation?', APP_HTML)
+        self.assertIn("stopSpeech();", APP_HTML)
+        self.assertIn("stopPendingRequest();", APP_HTML)
+        self.assertIn("state.messages = []", APP_HTML)
+        self.assertNotIn("captureNote(", APP_HTML.split("function clearConversation()", 1)[1].split("function speakIfEnabled", 1)[0])
 
     def test_pwa_manifest_and_offline_shell(self):
         data = manifest()
