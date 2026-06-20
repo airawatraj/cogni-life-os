@@ -72,9 +72,13 @@ def evaluate_size(size: int) -> dict:
             latency = time.monotonic() - q_start
             result_paths = [item["path"] for item in results]
             hits = [path for path in result_paths if path in relevant]
+            top5_paths = result_paths[:5]
+            top5_hits = [path for path in top5_paths if path in relevant]
             false_positive_total += len([path for path in result_paths if path not in relevant])
             precision = len(hits) / max(len(result_paths), 1)
             recall = len(hits) / max(min(len(relevant), 10), 1)
+            precision5 = len(top5_hits) / max(len(top5_paths), 1)
+            recall5 = len(top5_hits) / max(min(len(relevant), 5), 1)
             reciprocal_rank = 0.0
             for rank, path in enumerate(result_paths, 1):
                 if path in relevant:
@@ -84,7 +88,9 @@ def evaluate_size(size: int) -> dict:
                 {
                     "query": query,
                     "relevant_count": len(relevant),
+                    "precision_at_5": precision5,
                     "precision_at_10": precision,
+                    "recall_at_5": recall5,
                     "recall_at_10": recall,
                     "mrr": reciprocal_rank,
                     "false_positive_rate": (len(result_paths) - len(hits)) / max(len(result_paths), 1),

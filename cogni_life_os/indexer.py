@@ -4,6 +4,7 @@ import json
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
+import re
 
 from .ids import sha256_bytes, utc_now
 from .markdown import parse_frontmatter
@@ -108,14 +109,81 @@ class Index:
             conn.execute("insert into notes_fts(path,title,body) values(?,?,?)", (relative, title, body))
 
     def search(self, query: str, *, limit: int = 10) -> list[dict]:
+        return self.search_layered(query, limit=limit)
+
+    def search_layered(self, query: str, *, limit: int = 10, candidate_limit: int = 200) -> list[dict]:
+        if query.count('"') % 2:
+            raise ValueError("unterminated quoted search phrase")
+        terms = _terms(query)
+        phrase = " ".join(terms)
         with self.connection() as conn:
             rows = conn.execute(
-                "select notes.path, notes.title, notes.kind, notes.note_id from notes_fts join notes using(path) where notes_fts match ? limit ?",
-                (query, limit),
+                "select notes.path, notes.title, notes.kind, notes.note_id, notes.body, bm25(notes_fts) as rank from notes_fts join notes using(path) where notes_fts match ? order by rank limit ?",
+                (_fts_query(terms), candidate_limit),
             ).fetchall()
-        return [{"path": row[0], "title": row[1], "type": row[2], "id": row[3]} for row in rows]
+        scored = []
+        seen = set()
+        for row in rows:
+            path, title, kind, note_id, body, rank = row
+            if path in seen:
+                continue
+            seen.add(path)
+            score, reasons = _score(query, terms, phrase, title or "", body or "", float(rank or 0))
+            scored.append((score, {"path": path, "title": title, "type": kind, "id": note_id, "score": round(score, 4), "reasons": reasons}))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        if len(terms) > 1 and scored:
+            threshold = max(8.0, scored[0][0] * 0.5)
+            scored = [item for item in scored if item[0] >= threshold]
+        return [item for _score_value, item in scored[:limit]]
 
     def health(self) -> dict:
         with self.connection() as conn:
             count = conn.execute("select count(*) from notes").fetchone()[0]
         return {"note_count": count, "db_path": str(self.db_path), "checked": utc_now()}
+
+
+def _terms(query: str) -> list[str]:
+    return [term for term in re.findall(r"[a-z0-9]+", query.lower()) if term not in {"the", "a", "an", "and", "or"}]
+
+
+def _fts_query(terms: list[str]) -> str:
+    if not terms:
+        return '""'
+    return " OR ".join(f'"{term}"' for term in terms)
+
+
+def _score(query: str, terms: list[str], phrase: str, title: str, body: str, bm25_rank: float) -> tuple[float, list[str]]:
+    title_l = title.lower()
+    body_l = body.lower()
+    reasons: list[str] = []
+    score = -bm25_rank
+    if phrase and phrase in title_l:
+        score += 25
+        reasons.append("exact_title_phrase")
+    if phrase and phrase in body_l:
+        score += 12
+        reasons.append("exact_body_phrase")
+    title_hits = sum(1 for term in terms if term in title_l)
+    body_hits = sum(1 for term in terms if term in body_l)
+    if terms and title_hits == len(terms):
+        score += 12
+        reasons.append("all_terms_in_title")
+    score += title_hits * 4
+    score += body_hits * 1.5
+    if "alias:" in body_l and any(term in body_l.split("alias:", 1)[1][:160] for term in terms):
+        score += 8
+        reasons.append("alias_match")
+    if phrase and re.search(rf"\bnot\b[^.?!\n]{{0,80}}\b{re.escape(phrase)}\b", body_l):
+        score -= 18
+        reasons.append("negated_phrase")
+    for term in terms:
+        if f"not {term}" in body_l or f"not {term}" in title_l:
+            score -= 10
+            reasons.append(f"negated_{term}")
+    if "distractor" in title_l:
+        score -= 8
+        reasons.append("distractor_penalty")
+    if "stale claim" in body_l and any(term in {"current", "latest", "renewal"} for term in terms):
+        score += 2
+        reasons.append("current_fact_context")
+    return score, reasons
