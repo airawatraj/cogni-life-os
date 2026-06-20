@@ -21,6 +21,16 @@ Cogni Life OS is designed around a different model:
 
 ## Features
 
+
+
+<p align="center">
+  <img src="assets/cogni-life-os-mobile.png" alt="Cogni Life OS mobile chat interface" width="360">Mobile
+</p>
+
+<p align="center">
+  <img src="assets/cogni-life-os-desktop.png" alt="Cogni Life OS desktop interface" width="900">Desktop
+</p>
+
 * Obsidian-compatible Markdown vault
 * Text, image, PDF, DOCX, receipt, screenshot, and audio ingestion
 * Source preservation with hashes and provenance
