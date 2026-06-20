@@ -16,6 +16,28 @@ from cogni_life_os.vault import Vault
 PNG_1X1 = b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + struct.pack(">II", 1, 1) + b"\x08\x02\x00\x00\x00" + b"\x00\x00\x00\x00"
 
 
+def render_fixture_image(text: str, fmt: str = "TIFF") -> bytes:
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError as exc:
+        raise unittest.SkipTest("Pillow unavailable for deterministic OCR fixture rendering") from exc
+    image = Image.new("RGB", (1000, 240), "white")
+    draw = ImageDraw.Draw(image)
+    font = None
+    for candidate in ("DejaVuSans.ttf", "LiberationSans-Regular.ttf"):
+        try:
+            font = ImageFont.truetype(candidate, 48)
+            break
+        except OSError:
+            continue
+    if font is None:
+        font = ImageFont.load_default()
+    draw.text((40, 80), text, fill="black", font=font)
+    out = io.BytesIO()
+    image.save(out, format=fmt)
+    return out.getvalue()
+
+
 class MediaIngestTests(unittest.TestCase):
     def test_mime_detection_and_filename_sanitization(self):
         self.assertEqual(detect_mime(PNG_1X1, "x.png"), "image/png")
@@ -63,42 +85,11 @@ class MediaIngestTests(unittest.TestCase):
             self.assertIn(result.error_code, {"TRANSCRIPTION_ENGINE_UNAVAILABLE", "TRANSCRIPTION_MODEL_UNAVAILABLE"})
 
     def test_real_tesseract_ocr_fixture_when_available(self):
-        if not shutil.which("tesseract") or not shutil.which("text2image"):
-            self.skipTest("tesseract/text2image not installed")
-        with tempfile.TemporaryDirectory() as tmp:
-            source = Path(tmp) / "ocr.txt"
-            source.write_text("COGNI OCR TEST\n", encoding="utf-8")
-            outputbase = Path(tmp) / "ocr"
-            subprocess.run(
-                [
-                    "text2image",
-                    "--text",
-                    str(source),
-                    "--outputbase",
-                    str(outputbase),
-                    "--font",
-                    "Arial",
-                    "--ptsize",
-                    "24",
-                    "--xsize",
-                    "1000",
-                    "--ysize",
-                    "240",
-                    "--margin",
-                    "20",
-                    "--degrade_image=false",
-                    "--rotate_image=false",
-                    "--white_noise=false",
-                    "--smooth_noise=false",
-                    "--blur=false",
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-            image = Path(str(outputbase) + ".tif")
-            result = extract(image.read_bytes(), "ocr.tif")
+        if not shutil.which("tesseract"):
+            self.skipTest("tesseract not installed")
+        image = render_fixture_image("COGNI OCR TEST")
+        with tempfile.TemporaryDirectory():
+            result = extract(image, "ocr.tif")
             self.assertEqual(result.status, "complete")
             self.assertIn("COGNI", result.extracted_text.upper())
             self.assertEqual(result.extractor, "tesseract")
@@ -116,44 +107,12 @@ class MediaIngestTests(unittest.TestCase):
             self.assertEqual(result.extractor, "whisper-cpp")
 
     def test_scanned_pdf_ocr_fixture_when_available(self):
-        required = ["text2image", "tiff2pdf", "tesseract", "pdftoppm"]
+        required = ["tesseract", "pdftoppm"]
         if any(not shutil.which(item) for item in required):
             self.skipTest("scanned PDF OCR tools unavailable")
-        with tempfile.TemporaryDirectory() as tmp:
-            source = Path(tmp) / "scan.txt"
-            source.write_text("SCANNED COGNI TEXT\n", encoding="utf-8")
-            outputbase = Path(tmp) / "scan"
-            subprocess.run(
-                [
-                    "text2image",
-                    "--text",
-                    str(source),
-                    "--outputbase",
-                    str(outputbase),
-                    "--font",
-                    "Arial",
-                    "--ptsize",
-                    "24",
-                    "--xsize",
-                    "1000",
-                    "--ysize",
-                    "240",
-                    "--margin",
-                    "20",
-                    "--degrade_image=false",
-                    "--rotate_image=false",
-                    "--white_noise=false",
-                    "--smooth_noise=false",
-                    "--blur=false",
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
-            pdf = Path(tmp) / "scan.pdf"
-            subprocess.run(["tiff2pdf", "-o", str(pdf), str(outputbase) + ".tif"], check=True, capture_output=True, timeout=15)
-            result = extract(pdf.read_bytes(), "scan.pdf")
+        pdf = render_fixture_image("SCANNED COGNI TEXT", fmt="PDF")
+        with tempfile.TemporaryDirectory():
+            result = extract(pdf, "scan.pdf")
             self.assertEqual(result.status, "complete")
             self.assertIn("COGNI", result.extracted_text.upper())
             self.assertEqual(result.extractor, "pdftoppm+tesseract")
