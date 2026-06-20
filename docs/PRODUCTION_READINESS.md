@@ -16,7 +16,7 @@ Status: local production candidate, not production or iCloud activated.
 - Private local API token gate
 - Live DGX endpoint reached after local-network approval on 2026-06-20
 - Live Cogni-Brain adversarial, routing, final-content, and actual tool-call contract passes with `reasoning_effort=none`, `chat_template_kwargs.enable_thinking=false`, and JSON response mode where needed
-- Held-out retrieval benchmarks pass at 10k, 50k, and 100k local synthetic notes
+- Held-out layered lexical retrieval benchmarks pass at 10k, 50k, and 100k local synthetic notes
 
 ## Live Model Observation
 
@@ -28,3 +28,4 @@ Endpoint discovery reports `Cogni-Brain` served by vLLM with root `Intel/Qwen3.5
 - iCloud integration tests are intentionally not run in this session.
 - Production iCloud vault activation remains a deferred external gate.
 - Video understanding remains fail-closed and is not claimed as supported.
+- Model-based embedding retrieval is not implemented or validated.

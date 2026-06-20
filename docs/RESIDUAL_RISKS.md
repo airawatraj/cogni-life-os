@@ -7,4 +7,5 @@
 - Scanned PDF OCR is bounded to the first three pages in this local candidate to control runtime and resource use.
 - The local HTTP service is loopback-only for this phase and must not be exposed on LAN.
 - Live Cogni-Brain adversarial, routing, final-content, and actual tool-call probes pass against the local endpoint only when reasoning is disabled with the discovered vLLM/Qwen parameters. Broader live multimodal behavior at that endpoint remains unproven.
-- Retrieval uses deterministic local lexical concept vectors and SQLite FTS/BM25 rather than a model-based embedding index; it remains disposable and rebuildable from Markdown.
+- Retrieval uses layered lexical retrieval with SQLite FTS/BM25 and deterministic ranking; it remains disposable and rebuildable from Markdown.
+- Model-based embedding retrieval is not implemented or validated.

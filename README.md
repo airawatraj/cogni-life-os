@@ -27,8 +27,8 @@ Cogni Life OS is designed around a different model:
 * Durable tasks with restart recovery and idempotency
 * Typed tools and bounded write plans
 * Atomic writes with conflict detection
-* Local full-text and layered retrieval
-* Rebuildable SQLite indexes
+* Local full-text retrieval with aliases, metadata, dates, links, and deterministic ranking
+* Disposable, rebuildable SQLite indexes
 * Local Cogni-Brain integration
 * Authenticated loopback HTTP API
 * Backup, restore, integrity, and soak testing
@@ -209,7 +209,7 @@ Cogni Life OS currently provides a local-only implementation with:
 * source preservation;
 * durable task state;
 * multimodal extraction;
-* local retrieval;
+* layered lexical retrieval;
 * Cogni-Brain integration;
 * an authenticated local API;
 * backup and restore;
