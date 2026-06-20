@@ -22,8 +22,18 @@ class ProbeResult:
     attempts: list[dict[str, Any]] | None = None
 
 
-def chat(settings: Settings, messages: list[dict[str, Any]], *, timeout: float | None = None, max_tokens: int = 1024) -> dict[str, Any]:
-    payload = json.dumps({"model": settings.model_name, "messages": messages, "temperature": 0, "max_tokens": max_tokens}).encode("utf-8")
+def chat(settings: Settings, messages: list[dict[str, Any]], *, timeout: float | None = None, max_tokens: int = 1024, response_format: dict[str, Any] | None = None) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "model": settings.model_name,
+        "messages": messages,
+        "temperature": 0,
+        "max_tokens": max_tokens,
+        "reasoning_effort": "none",
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    if response_format is not None:
+        body["response_format"] = response_format
+    payload = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         f"{settings.model_base_url.rstrip('/')}/chat/completions",
         data=payload,
@@ -56,7 +66,7 @@ def run_probes(settings: Settings) -> dict[str, Any]:
         for attempt in range(retries + 1):
             started = time.monotonic()
             try:
-                raw = chat(settings, messages, timeout=live_timeout, max_tokens=1024)
+                raw = chat(settings, messages, timeout=live_timeout, max_tokens=512, response_format={"type": "json_object"} if (expected_json is not None or expect_json or semantic) else None)
                 last_raw = raw
                 attempts.append({"attempt": attempt + 1, "status": "response", "latency_seconds": round(time.monotonic() - started, 3)})
                 result = _parse_probe(name, raw, expected_exact=expected_exact, expected_json=expected_json, expect_json=expect_json, semantic=semantic, attempts=attempts)
@@ -113,7 +123,7 @@ def run_probes(settings: Settings) -> dict[str, Any]:
             status = "fail" if hard_failure else "pass"
             return ProbeResult(name, status, "content returned", issues, raw, attempts)
 
-    add("text", [{"role": "user", "content": "Exactly: COGNI_TEXT_OK"}], expected_exact="COGNI_TEXT_OK")
+    add("text", [{"role": "user", "content": "Reply exactly COGNI_TEXT_OK"}], expected_exact="COGNI_TEXT_OK")
     add("json", [{"role": "user", "content": "JSON only {\"ok\":true,\"tool\":null}"}], expected_json={"ok": True, "tool": None})
     add("nested_json", [{"role": "user", "content": "JSON only {\"outer\":{\"inner\":\"value\"},\"items\":[1,2]}"}], expected_json={"outer": {"inner": "value"}, "items": [1, 2]})
     add("typed_tool_json", [{"role": "user", "content": "JSON only {\"tool\":{\"name\":\"vault_search\",\"input\":{\"query\":\"insurance\"}}}"}], expected_json={"tool": {"name": "vault_search", "input": {"query": "insurance"}}})
@@ -130,6 +140,12 @@ def run_probes(settings: Settings) -> dict[str, Any]:
         "checked": utc_now(),
         "endpoint": settings.model_base_url,
         "model": settings.model_name,
+        "contract_findings": {
+            "served_by": "vLLM",
+            "model_family": "Qwen3.5",
+            "final_content_mode": "reasoning_effort=none plus chat_template_kwargs.enable_thinking=false",
+            "json_mode": "response_format={type: json_object}",
+        },
         "results": [p.__dict__ for p in probes],
         "metrics": {
             "scenario_count": len(probes),

@@ -9,7 +9,7 @@ class ModelContractTests(unittest.TestCase):
     def test_probe_accepts_trimmed_json_and_separates_reasoning(self):
         original = model_contract.chat
 
-        def fake_chat(_settings, messages, timeout=None, max_tokens=256):
+        def fake_chat(_settings, messages, timeout=None, max_tokens=256, response_format=None):
             content = "\n\n{\"ok\": true, \"tool\": null}" if "JSON" in messages[-1]["content"] else "\n\nCOGNI_TEXT_OK"
             return {"choices": [{"message": {"content": content, "reasoning": "hidden"}}]}
 
