@@ -5,13 +5,14 @@ import base64
 import os
 import shutil
 import socket
+import subprocess
 import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .auth import TokenStore
-from .config import Settings, persist_vault_path
+from .config import Settings, persist_local_config, persist_vault_path
 from .evaluation import run as run_eval
 from .indexer import Index
 from .ingest import capture_text
@@ -26,6 +27,13 @@ from .vault import Vault
 ICLOUD_WARNING = "Cogni can use this folder, but file availability and sync conflicts remain controlled by iCloud. Keep backups and avoid simultaneous automated writes from multiple devices."
 LOCAL_ONLY_PHONE_MESSAGE = "Phone access unavailable while the service is local-only."
 LAN_WARNING = "LAN access exposes the service to devices on the same network."
+REMOTE_NOT_CONFIGURED_MESSAGE = "Cross-device access is not configured."
+ACCESS_MODE_LABELS = {
+    "this-device": "This device only",
+    "lan": "Local network",
+    "tailscale": "Tailscale/private remote access",
+    "custom": "Custom URL",
+}
 
 
 APP_HTML = """<!doctype html>
@@ -487,11 +495,22 @@ APP_HTML = """<!doctype html>
           </div>
           <div class="panel stack">
             <h2>Access</h2>
+            <label class="stack small">Access mode
+              <select id="accessModeSelect">
+                <option value="this-device">This device only</option>
+                <option value="lan">Local network</option>
+                <option value="tailscale">Tailscale/private remote access</option>
+                <option value="custom">Custom URL</option>
+              </select>
+            </label>
+            <label class="stack small">Public base URL<input id="publicBaseUrlInput" placeholder="https://your-device.tailnet.ts.net"></label>
+            <div class="row"><button class="button secondary" id="validateAccessBtn" type="button">Validate URL</button><button class="button" id="saveAccessBtn" type="button">Save access</button><button class="button secondary" id="copyPublicUrlBtn" type="button">Copy URL</button></div>
             <div class="item"><strong>Service mode</strong><div class="small muted" id="remoteState">Loopback-only by default.</div></div>
+            <div class="item"><strong>Cogni Life OS service address</strong><div class="small muted" id="serviceAddressState">Unavailable</div></div>
+            <div class="item"><strong>Reachability/configuration</strong><div class="small muted" id="accessConfigState">Unavailable</div></div>
             <div class="item"><strong>Phone URL</strong><div class="small muted" id="settingsPhoneUrl">Unavailable</div></div>
             <div class="qr" id="settingsQr" hidden><img id="settingsQrImage" alt="QR code for LAN PWA URL"></div>
             <div class="warning" id="settingsAccessWarning">Phone access unavailable while the service is local-only.</div>
-            <button class="button secondary" id="lanModeBtn" type="button">Enable LAN access</button>
             <div class="small muted" id="lanModeHint"></div>
           </div>
           <div class="panel stack">
@@ -651,19 +670,19 @@ function renderStatus(status) {
   $("safeStatus").textContent = status.safe_operations.status;
   $("launchStatus").textContent = status.service.status;
   $("localUrl").textContent = status.service.local_url;
-  $("phoneUrl").textContent = status.service.phone_url || status.service.phone_warning || "Phone URL unavailable";
+  $("phoneUrl").textContent = status.service.phone_url || status.service.phone_warning || "Cross-device access is not configured.";
   $("modelEndpoint").textContent = `${status.model.endpoint} . ${status.model.endpoint_status}`;
-  $("remoteState").textContent = status.service.mode === "lan" ? "LAN access enabled for devices on the same network." : "Local-only: phones cannot reach this service.";
+  $("remoteState").textContent = status.service.mode_label || status.service.mode;
   $("voiceState").textContent = `STT: ${status.voice.stt.provider} (${status.voice.stt.status}). TTS: ${status.voice.tts.provider} (${status.voice.tts.status}).`;
-  $("phoneWarning").hidden = status.service.mode === "lan" && status.service.phone_url;
+  $("phoneWarning").hidden = Boolean(status.service.phone_url);
   $("phoneWarning").textContent = status.service.warning || status.service.phone_warning || "";
-  $("launchQr").hidden = !(status.service.mode === "lan" && status.service.phone_url);
+  $("launchQr").hidden = !status.service.phone_url;
   setDot("serviceDot", "ok"); setDot("vaultDot", status.vault.status === "ready" ? "ok" : "bad");
-  setDot("indexDot", "ok"); setDot("safeDot", "ok"); setDot("launchDot", status.service.mode === "lan" && status.service.phone_url ? "ok" : "warn");
+  setDot("indexDot", "ok"); setDot("safeDot", "ok"); setDot("launchDot", status.service.phone_url ? "ok" : "warn");
   setDot("modelDot", status.model.endpoint_status === "online" ? "ok" : "warn");
   setDot("chatModelDot", status.model.endpoint_status === "online" ? "ok" : "warn");
   renderSettings();
-  if (status.service.mode === "lan" && status.service.phone_url) $("qrImage").src = "/qr.svg?url=" + encodeURIComponent(status.service.phone_url);
+  if (status.service.phone_url) $("qrImage").src = "/qr.svg?url=" + encodeURIComponent(status.service.phone_url);
 }
 async function refreshStatus() {
   const status = await api("/api/app-status");
@@ -1050,12 +1069,15 @@ function renderSettings() {
   if (!state.status) return;
   $("vaultPathInput").value = $("vaultPathInput").value || state.status.vault.path;
   $("settingsModelState").textContent = `${state.status.model.name} . ${state.status.model.endpoint_status}`;
-  $("settingsPhoneUrl").textContent = state.status.service.phone_url || state.status.service.phone_warning || "Phone access unavailable";
-  $("settingsQr").hidden = !(state.status.service.mode === "lan" && state.status.service.phone_url);
-  if (state.status.service.mode === "lan" && state.status.service.phone_url) $("settingsQrImage").src = "/qr.svg?url=" + encodeURIComponent(state.status.service.phone_url);
+  $("accessModeSelect").value = state.status.service.access_mode || state.status.service.mode || "this-device";
+  $("publicBaseUrlInput").value = $("publicBaseUrlInput").value || state.status.service.public_base_url || "";
+  $("settingsPhoneUrl").textContent = state.status.service.phone_url || state.status.service.phone_warning || "Cross-device access is not configured.";
+  $("serviceAddressState").textContent = state.status.service.local_url;
+  $("accessConfigState").textContent = state.status.service.phone_url ? (state.status.service.configured_for_running_service ? "Configured for this running service." : "URL selected, but this running service may need a bind/port or reverse-proxy restart.") : "Cross-device access is not configured.";
+  $("settingsQr").hidden = !state.status.service.phone_url;
+  if (state.status.service.phone_url) $("settingsQrImage").src = "/qr.svg?url=" + encodeURIComponent(state.status.service.phone_url);
   $("settingsAccessWarning").textContent = state.status.service.warning || state.status.service.phone_warning || "";
-  $("lanModeBtn").textContent = state.status.service.mode === "lan" ? "Return to local-only mode" : "Enable LAN access";
-  $("lanModeHint").textContent = state.status.service.mode === "lan" ? "Restart with --host 127.0.0.1 to return to local-only mode." : "Restart with --host 0.0.0.0 after explicitly enabling LAN access.";
+  $("lanModeHint").textContent = `Running: ${state.status.service.local_url}. Configured bind: ${state.status.service.configured_bind_host}:${state.status.service.configured_port}. Changing bind host or port requires a service restart. Cogni-Brain model endpoint is separate.`;
   const vault = state.status.vault;
   $("vaultConfigResult").innerHTML = `
     <strong>${escapeHtml(vault.status)}</strong>
@@ -1066,13 +1088,32 @@ function renderSettings() {
   `;
   $("settingsStatus").innerHTML = [
     ["Service", state.status.service.status],
-    ["Local URL", state.status.service.local_url],
-    ["Mode", state.status.service.mode],
-    ["Model", state.status.model.name],
+    ["Cogni service address", state.status.service.phone_url || state.status.service.local_url],
+    ["Access mode", state.status.service.mode_label || state.status.service.mode],
+    ["Cogni-Brain model endpoint", state.status.model.endpoint],
     ["Vault", state.status.vault.path],
     ["Index", `${state.status.index.note_count || 0} notes`],
     ["Safe operations", state.status.safe_operations.status]
   ].map(([k,v]) => `<div class="item"><strong>${escapeHtml(k)}</strong><div class="small muted">${escapeHtml(v)}</div></div>`).join("");
+}
+async function validateAccessConfig() {
+  const result = await api("/api/access/validate", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({mode:$("accessModeSelect").value, public_base_url:$("publicBaseUrlInput").value})});
+  $("accessConfigState").textContent = result.valid ? "Access settings are valid." : (result.error || "Access settings are invalid.");
+  return result;
+}
+async function saveAccessConfig() {
+  const result = await api("/api/access/save", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({mode:$("accessModeSelect").value, public_base_url:$("publicBaseUrlInput").value})});
+  $("accessConfigState").textContent = result.restart_required ? "Saved. Restart required for bind host or port changes." : "Saved.";
+  await refreshStatus();
+}
+async function copyPublicUrl() {
+  const value = state.status && state.status.service ? state.status.service.phone_url : "";
+  if (!value) {
+    $("accessConfigState").textContent = "Cross-device access is not configured.";
+    return;
+  }
+  await navigator.clipboard.writeText(value);
+  $("accessConfigState").textContent = "Copied.";
 }
 async function validateVaultPath() {
   const result = await api("/api/vault/validate", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({path:$("vaultPathInput").value})});
@@ -1224,13 +1265,9 @@ $("refreshStatusBtn").addEventListener("click", refreshStatus);
 $("validateVaultBtn").addEventListener("click", async () => { try { await validateVaultPath(); } catch (err) { $("vaultConfigResult").textContent = err.message; } });
 $("saveVaultBtn").addEventListener("click", async () => { try { await saveVaultPath(); } catch (err) { $("vaultConfigResult").textContent = err.message; } });
 $("rebuildIndexBtn").addEventListener("click", async () => { try { await rebuildIndex(); } catch (err) { $("vaultConfigResult").textContent = err.message; } });
-$("lanModeBtn").addEventListener("click", () => {
-  if (state.status && state.status.service.mode === "lan") {
-    $("lanModeHint").textContent = "Stop the service and restart with --host 127.0.0.1 to return to local-only mode.";
-  } else if (confirm("Enable LAN access? This exposes the service to devices on the same network and still requires the service token.")) {
-    $("lanModeHint").textContent = "Restart the service with --host 0.0.0.0 to enable LAN access.";
-  }
-});
+$("validateAccessBtn").addEventListener("click", async () => { try { await validateAccessConfig(); } catch (err) { $("accessConfigState").textContent = err.message; } });
+$("saveAccessBtn").addEventListener("click", async () => { try { await saveAccessConfig(); } catch (err) { $("accessConfigState").textContent = err.message; } });
+$("copyPublicUrlBtn").addEventListener("click", async () => { try { await copyPublicUrl(); } catch (err) { $("accessConfigState").textContent = err.message; } });
 $("logoutBtn").addEventListener("click", () => { localStorage.removeItem("cogni_token"); location.reload(); });
 $("advancedBtn").addEventListener("click", () => { location.hash = "#advanced"; });
 $("backSettingsBtn").addEventListener("click", () => { location.hash = "#settings"; });
@@ -1294,24 +1331,32 @@ def app_status(settings: Settings, vault: Vault, index: Index, host_header: str 
     local_url = _request_url(host_header, server_address)
     bind_host = _server_bind_host(server_address)
     local_only = bind_host in {"127.0.0.1", "localhost", "::1"}
-    lan_ip = None if local_only else detect_lan_ip()
     port = server_address[1] if server_address else (urlparse(local_url).port or 8765)
-    phone_url = f"http://{lan_ip}:{port}" if lan_ip else None
+    selected = select_public_service_url(settings, port=port)
+    phone_url = selected["url"] if selected["cross_device"] else None
     index_health = index.health()
     validation = validate_vault_path(str(vault.root))
     return {
         "service": {
             "name": "Cogni Life OS",
             "status": "online",
-            "mode": "local-only" if local_only else "lan",
+            "mode": selected["mode"] if phone_url else "this-device",
+            "mode_label": selected["mode_label"] if phone_url else ACCESS_MODE_LABELS["this-device"],
+            "access_mode": settings.access_mode,
             "bind_host": bind_host,
+            "configured_bind_host": settings.bind_host,
+            "configured_port": settings.port,
             "local_url": local_url,
             "reachable_url": phone_url,
             "phone_url": phone_url,
-            "lan_ip": lan_ip,
+            "public_base_url": settings.public_base_url,
+            "selection_source": selected["source"],
+            "configured_for_running_service": selected["configured_for_running_service"],
+            "lan_ip": selected["lan_ip"],
+            "tailscale": selected["tailscale"],
             "loopback_only": local_only,
-            "phone_warning": LOCAL_ONLY_PHONE_MESSAGE if local_only else (None if lan_ip else "No usable private LAN address was detected."),
-            "warning": LOCAL_ONLY_PHONE_MESSAGE if local_only else LAN_WARNING,
+            "phone_warning": REMOTE_NOT_CONFIGURED_MESSAGE if not phone_url else None,
+            "warning": REMOTE_NOT_CONFIGURED_MESSAGE if not phone_url else ("Tailscale/private remote access selected. Service-token authentication is still required." if selected["mode"] == "tailscale" else LAN_WARNING),
         },
         "model": {
             "name": settings.model_name,
@@ -1334,7 +1379,7 @@ def app_status(settings: Settings, vault: Vault, index: Index, host_header: str 
         "features": {
             "voice_notes": True,
             "video": False,
-            "remote_access": not local_only,
+            "remote_access": bool(phone_url),
             "live_model_chat": True,
             "file_upload": True,
             "offline_shell": True,
@@ -1596,6 +1641,28 @@ def _request_url(host_header: str | None, server_address: tuple | None) -> str:
     return "http://127.0.0.1:8765"
 
 
+def validate_public_base_url(value: str) -> str:
+    raw = str(value or "").strip().rstrip("/")
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("URL must start with http:// or https:// and include a host.")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("URL must not include credentials, query strings, or fragments.")
+    hostname = parsed.hostname or ""
+    if hostname in {"127.0.0.1", "localhost", "::1"}:
+        raise ValueError("Localhost cannot be used as a cross-device URL.")
+    return raw
+
+
+def _safe_public_url(value: str) -> str | None:
+    try:
+        return validate_public_base_url(value) or None
+    except ValueError:
+        return None
+
+
 def _is_private_lan_ip(value: str) -> bool:
     parts = value.split(".")
     if len(parts) != 4:
@@ -1624,6 +1691,82 @@ def detect_lan_ip() -> str | None:
         if candidate not in {"127.0.0.1", "0.0.0.0"} and _is_private_lan_ip(candidate):
             return candidate
     return None
+
+
+def tailscale_status() -> dict:
+    if not shutil.which("tailscale"):
+        return {"available": False, "connected": False}
+    try:
+        proc = subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=2)
+    except Exception as exc:
+        return {"available": True, "connected": False, "error": str(exc)}
+    if proc.returncode != 0:
+        return {"available": True, "connected": False, "error": proc.stderr.strip()}
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        return {"available": True, "connected": False, "error": str(exc)}
+    return parse_tailscale_status(data)
+
+
+def parse_tailscale_status(data: dict) -> dict:
+    self_info = data.get("Self") or {}
+    ips = [ip for ip in self_info.get("TailscaleIPs", []) if "." in str(ip)]
+    dns_name = str(self_info.get("DNSName") or "").strip(".")
+    hostname = str(self_info.get("HostName") or self_info.get("ComputedName") or "").strip()
+    https_url = _safe_public_url(data.get("MagicDNSSuffix") or "")
+    if not https_url and dns_name:
+        https_url = f"https://{dns_name}"
+    return {
+        "available": True,
+        "connected": bool(self_info and not data.get("BackendState") in {"Stopped", "NoState"}),
+        "ipv4": ips[0] if ips else None,
+        "hostname": hostname,
+        "dns_name": dns_name,
+        "https_url": https_url,
+        "funnel_enabled": bool(self_info.get("Funnel") or data.get("Funnel")),
+    }
+
+
+def select_public_service_url(settings: Settings, *, port: int | None = None, lan_ip: str | None = None, tailscale: dict | None = None) -> dict:
+    service_port = port or settings.port
+    lan = lan_ip if lan_ip is not None else detect_lan_ip()
+    ts = tailscale if tailscale is not None else tailscale_status()
+    configured = _safe_public_url(settings.public_base_url)
+    ts_https = _safe_public_url(str(ts.get("https_url") or ""))
+    ts_ip = ts.get("ipv4")
+    if configured:
+        source, url, mode = "configured", configured, (settings.access_mode if settings.access_mode in {"lan", "tailscale", "custom"} else "custom")
+    elif settings.access_mode == "this-device":
+        source, url, mode = "localhost", None, "this-device"
+    elif settings.access_mode == "custom":
+        source, url, mode = "localhost", None, "custom"
+    elif settings.access_mode == "lan":
+        source, url, mode = ("lan", f"http://{lan}:{service_port}", "lan") if lan else ("localhost", None, "lan")
+    elif ts_https:
+        source, url, mode = "tailscale_https", ts_https, "tailscale"
+    elif ts_ip:
+        source, url, mode = "tailscale_ip", f"http://{ts_ip}:{service_port}", "tailscale"
+    elif lan:
+        source, url, mode = "lan", f"http://{lan}:{service_port}", "lan"
+    else:
+        source, url, mode = "localhost", None, "this-device"
+    bind_all = settings.bind_host == "0.0.0.0"
+    configured_for_running_service = bool(
+        configured
+        or (mode == "lan" and bind_all)
+        or (mode == "tailscale" and (bind_all or settings.bind_host == str(ts_ip) or source == "tailscale_https"))
+    )
+    return {
+        "mode": mode,
+        "mode_label": ACCESS_MODE_LABELS.get(mode, mode),
+        "url": url,
+        "source": source,
+        "cross_device": bool(url and source != "localhost"),
+        "configured_for_running_service": configured_for_running_service,
+        "tailscale": ts,
+        "lan_ip": lan,
+    }
 
 
 def _server_bind_host(server_address: tuple | None) -> str:
@@ -1709,6 +1852,31 @@ def save_vault_config(settings: Settings, index: Index, current_vault: Vault, pa
         "icloud": validation["icloud"],
         "icloud_warning": validation["icloud_warning"],
     }
+
+
+def validate_access_config(mode: str, public_base_url: str) -> dict:
+    mode = mode if mode in ACCESS_MODE_LABELS else "this-device"
+    try:
+        normalized = validate_public_base_url(public_base_url) if public_base_url else ""
+    except ValueError as exc:
+        return {"valid": False, "mode": mode, "public_base_url": "", "error": str(exc)}
+    if mode == "custom" and not normalized:
+        return {"valid": False, "mode": mode, "public_base_url": "", "error": "Custom URL mode requires a public base URL."}
+    return {"valid": True, "mode": mode, "mode_label": ACCESS_MODE_LABELS[mode], "public_base_url": normalized}
+
+
+def save_access_config(settings: Settings, mode: str, public_base_url: str) -> dict:
+    validation = validate_access_config(mode, public_base_url)
+    if not validation["valid"]:
+        raise ValueError(validation["error"])
+    persist_local_config(
+        {
+            "COGNI_ACCESS_MODE": validation["mode"],
+            "COGNI_PUBLIC_BASE_URL": validation["public_base_url"],
+        },
+        settings.local_config_path,
+    )
+    return {**validation, "restart_required": False, "bind_host": settings.bind_host, "port": settings.port}
 
 
 def make_handler(settings: Settings):
@@ -1823,6 +1991,20 @@ def make_handler(settings: Settings):
                 if parsed.path == "/api/vault/validate":
                     payload = self._read_json()
                     self._json(200, validate_vault_path(str(payload.get("path", ""))))
+                    return
+                if parsed.path == "/api/access/validate":
+                    payload = self._read_json()
+                    result = validate_access_config(str(payload.get("mode", "")), str(payload.get("public_base_url", "")))
+                    self._json(200 if result["valid"] else 400, result)
+                    return
+                if parsed.path == "/api/access/save":
+                    payload = self._read_json()
+                    try:
+                        result = save_access_config(settings, str(payload.get("mode", "")), str(payload.get("public_base_url", "")))
+                    except ValueError as exc:
+                        self._json(400, {"valid": False, "error": "invalid_access_config", "detail": str(exc)})
+                        return
+                    self._json(200, result)
                     return
                 if parsed.path == "/api/vault/save":
                     payload = self._read_json()

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from cogni_life_os.config import Settings
 from cogni_life_os.ingest import capture_text
-from cogni_life_os.server import APP_HTML, SERVICE_WORKER, app_status, chat_turn, handle_upload, list_tasks, manifest, qr_svg, read_static, save_vault_config, transcribe_audio, validate_vault_path, voice_status
+from cogni_life_os.server import APP_HTML, SERVICE_WORKER, app_status, chat_turn, handle_upload, list_tasks, manifest, qr_svg, read_static, save_vault_config, select_public_service_url, transcribe_audio, validate_access_config, validate_public_base_url, validate_vault_path, voice_status
 from cogni_life_os.vault import Vault
 from cogni_life_os.indexer import Index
 
@@ -205,7 +205,7 @@ class UiPwaTests(unittest.TestCase):
         self.assertIsNone(status["service"]["reachable_url"])
         self.assertIsNone(status["service"]["phone_url"])
         self.assertTrue(status["service"]["loopback_only"])
-        self.assertEqual(status["service"]["phone_warning"], "Phone access unavailable while the service is local-only.")
+        self.assertEqual(status["service"]["phone_warning"], "Cross-device access is not configured.")
         self.assertIn("status.service.phone_url", APP_HTML)
         self.assertIn('id="launchQr" hidden', APP_HTML)
         svg = qr_svg("http://192.168.1.44:8765")
@@ -216,10 +216,11 @@ class UiPwaTests(unittest.TestCase):
     def test_lan_mode_qr_uses_private_lan_address_and_not_token(self):
         import cogni_life_os.server as server
 
+        settings = Settings(**{**self.settings.__dict__, "access_mode": "lan"})
         original = server.detect_lan_ip
         server.detect_lan_ip = lambda: "192.168.1.50"
         try:
-            status = app_status(self.settings, self.vault, self.index, "127.0.0.1:8765", ("0.0.0.0", 8765))
+            status = app_status(settings, self.vault, self.index, "127.0.0.1:8765", ("0.0.0.0", 8765))
         finally:
             server.detect_lan_ip = original
         self.assertEqual(status["service"]["mode"], "lan")
@@ -227,6 +228,45 @@ class UiPwaTests(unittest.TestCase):
         self.assertNotIn("127.0.0.1", status["service"]["phone_url"])
         self.assertNotIn(self.token, status["service"]["phone_url"])
         self.assertIn("LAN access exposes the service to devices on the same network.", status["service"]["warning"])
+
+    def test_public_url_selection_order_and_qr_safety(self):
+        base = {**self.settings.__dict__, "access_mode": "tailscale", "port": 8765}
+        explicit = Settings(**{**base, "public_base_url": "https://cogni.example.ts.net"})
+        selected = select_public_service_url(explicit, lan_ip="192.168.1.10", tailscale={"https_url": "https://magic.ts.net", "ipv4": "100.64.0.2"})
+        self.assertEqual(selected["url"], "https://cogni.example.ts.net")
+
+        settings = Settings(**base)
+        selected = select_public_service_url(settings, lan_ip="192.168.1.10", tailscale={"https_url": "https://magic.ts.net", "ipv4": "100.64.0.2"})
+        self.assertEqual(selected["source"], "tailscale_https")
+        self.assertEqual(selected["url"], "https://magic.ts.net")
+        selected = select_public_service_url(settings, lan_ip="192.168.1.10", tailscale={"ipv4": "100.64.0.2"})
+        self.assertEqual(selected["source"], "tailscale_ip")
+        self.assertEqual(selected["url"], "http://100.64.0.2:8765")
+        selected = select_public_service_url(settings, lan_ip="192.168.1.10", tailscale={})
+        self.assertEqual(selected["source"], "lan")
+        self.assertEqual(selected["url"], "http://192.168.1.10:8765")
+        selected = select_public_service_url(Settings(**{**base, "access_mode": "this-device"}), lan_ip="192.168.1.10", tailscale={"ipv4": "100.64.0.2"})
+        self.assertIsNone(selected["url"])
+
+        svg = qr_svg("https://magic.ts.net")
+        self.assertNotIn(self.token, svg)
+        self.assertNotIn(self.settings.model_api_key, svg)
+        self.assertNotIn("127.0.0.1", svg)
+
+    def test_bind_address_and_advertised_url_are_independent(self):
+        settings = Settings(**{**self.settings.__dict__, "bind_host": "127.0.0.1", "access_mode": "custom", "public_base_url": "https://cogni.tailnet.ts.net"})
+        status = app_status(settings, self.vault, self.index, "127.0.0.1:8765", ("127.0.0.1", 8765))
+        self.assertEqual(status["service"]["bind_host"], "127.0.0.1")
+        self.assertEqual(status["service"]["phone_url"], "https://cogni.tailnet.ts.net")
+        self.assertEqual(status["model"]["endpoint"], self.settings.model_base_url)
+        self.assertNotEqual(status["model"]["endpoint"], status["service"]["phone_url"])
+
+    def test_invalid_public_urls_are_rejected_and_funnel_is_not_enabled(self):
+        for value in ["ftp://bad.example", "https://user:pass@example.com", "https://example.com/?token=x", "http://127.0.0.1:8765"]:
+            with self.assertRaises(ValueError):
+                validate_public_base_url(value)
+        self.assertFalse(validate_access_config("custom", "http://127.0.0.1:8765")["valid"])
+        self.assertNotIn("tailscale funnel", APP_HTML.lower())
 
     def test_settings_contains_vault_access_and_diagnostics_controls(self):
         self.assertIn("<h2>Vault</h2>", APP_HTML)
@@ -240,6 +280,15 @@ class UiPwaTests(unittest.TestCase):
         self.assertIn('id="validateVaultBtn"', APP_HTML)
         self.assertIn('id="saveVaultBtn"', APP_HTML)
         self.assertIn('id="rebuildIndexBtn"', APP_HTML)
+        self.assertIn('id="accessModeSelect"', APP_HTML)
+        self.assertIn("This device only", APP_HTML)
+        self.assertIn("Local network", APP_HTML)
+        self.assertIn("Tailscale/private remote access", APP_HTML)
+        self.assertIn("Custom URL", APP_HTML)
+        self.assertIn('id="publicBaseUrlInput"', APP_HTML)
+        self.assertIn('id="copyPublicUrlBtn"', APP_HTML)
+        self.assertIn("Cogni Life OS service address", APP_HTML)
+        self.assertIn("Cogni-Brain model endpoint", APP_HTML)
 
     def test_vault_path_validation_and_icloud_warning(self):
         good = self.vault.root
