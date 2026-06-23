@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import json
 import base64
+import os
 import shutil
+import socket
+import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .auth import TokenStore
-from .config import Settings
+from .config import Settings, persist_vault_path
 from .evaluation import run as run_eval
 from .indexer import Index
 from .ingest import capture_text
@@ -18,6 +21,11 @@ from .markdown import parse_frontmatter
 from .media import WHISPER_MODEL, extract
 from .model_contract import chat, discover_endpoint
 from .vault import Vault
+
+
+ICLOUD_WARNING = "Cogni can use this folder, but file availability and sync conflicts remain controlled by iCloud. Keep backups and avoid simultaneous automated writes from multiple devices."
+LOCAL_ONLY_PHONE_MESSAGE = "Phone access unavailable while the service is local-only."
+LAN_WARNING = "LAN access exposes the service to devices on the same network."
 
 
 APP_HTML = """<!doctype html>
@@ -70,6 +78,7 @@ APP_HTML = """<!doctype html>
       }
     }
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
     html, body { min-height: 100%; }
     body {
       margin: 0;
@@ -190,7 +199,7 @@ APP_HTML = """<!doctype html>
     .error-card { background: var(--bad); border-color: color-mix(in srgb, #db5b51 36%, var(--line)); }
     .composer {
       border-top: 1px solid var(--line); padding: 12px max(12px, env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
-      display: grid; grid-template-columns: auto auto auto minmax(0, 1fr) auto; gap: 8px; align-items: end;
+      display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; gap: 8px; align-items: end;
       background: var(--panel);
     }
     .icon-btn, .send {
@@ -217,6 +226,19 @@ APP_HTML = """<!doctype html>
       width: 72px; height: 72px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); flex: 0 0 auto;
     }
     .attachment-preview .preview-text { min-width: 0; overflow-wrap: anywhere; }
+    .attachment-picker { position: relative; }
+    .attachment-menu {
+      position: absolute; left: 0; bottom: 54px; z-index: 4;
+      width: 190px; display: none; gap: 4px; padding: 6px;
+      border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+    .attachment-menu.visible { display: grid; }
+    .menu-btn {
+      border: 0; background: transparent; color: var(--text); cursor: pointer;
+      min-height: 40px; border-radius: 8px; padding: 8px 10px; text-align: left;
+    }
+    .menu-btn:hover, .menu-btn:focus-visible { background: var(--panel-2); outline: none; }
     .voice-panel {
       border-top: 1px solid var(--line);
       padding: 8px 12px;
@@ -343,18 +365,16 @@ APP_HTML = """<!doctype html>
     <section class="launch" aria-label="Desktop launch screen">
       <div class="row"><strong>Launch</strong><span class="pill"><span class="dot warn" id="launchDot"></span><span id="launchStatus">Checking</span></span></div>
       <div class="small muted" id="localUrl">Local URL unavailable</div>
-      <div class="qr"><img id="qrImage" alt="QR code for current PWA URL"></div>
+      <div class="qr" id="launchQr" hidden><img id="qrImage" alt="QR code for LAN PWA URL"></div>
+      <div class="small muted" id="phoneUrl">Phone URL unavailable</div>
       <div class="small muted" id="modelEndpoint">Model endpoint unavailable</div>
-      <div class="warning" id="phoneWarning" hidden>Phone access unavailable: service is bound to 127.0.0.1</div>
+      <div class="warning" id="phoneWarning" hidden>Phone access unavailable while the service is local-only.</div>
     </section>
   </aside>
 
   <main class="main">
     <header class="topbar">
       <div class="brand"><img class="compact-logo" src="/static/branding/cogni-chat-new-logo-round.ico" alt="Cogni"><div><h1>Cogni Life OS</h1><p id="mobileSub">Locked</p></div></div>
-      <button class="icon-btn" id="refreshBtn" title="Refresh status" aria-label="Refresh status">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M18.5 9A7 7 0 0 0 6.1 6.1L4 8"/><path d="M5.5 15A7 7 0 0 0 17.9 17.9L20 16"/></svg>
-      </button>
     </header>
     <div class="view">
       <section id="chat" class="screen active" data-title="Chat">
@@ -366,7 +386,7 @@ APP_HTML = """<!doctype html>
             </div>
             <div class="row">
               <div class="pill"><span class="dot warn" id="chatModelDot"></span><span id="activeModel">Model unavailable</span></div>
-              <button class="mini-btn" id="speakerBtn" type="button" title="Spoken replies disabled" aria-label="Enable spoken replies">
+              <button class="mini-btn" id="speakerBtn" type="button" title="Enable spoken replies" aria-label="Enable spoken replies">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="m22 9-6 6"/><path d="m16 9 6 6"/></svg>
               </button>
               <button class="mini-btn" id="clearChatBtn" type="button" title="Clear conversation" aria-label="Clear conversation">
@@ -391,14 +411,19 @@ APP_HTML = """<!doctype html>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
               </button>
             </div>
-            <label class="icon-btn" title="Attach image" aria-label="Attach image">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 8h.01"/><path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="m4 15 4-4a3 3 0 0 1 4 0l6 6"/><path d="m14 14 1-1a3 3 0 0 1 4 0l1 1"/></svg>
-              <input class="sr-only" id="chatImage" type="file" accept="image/*" capture="environment">
-            </label>
-            <label class="icon-btn" title="Attach document" aria-label="Attach document">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21.4 11.6-8.8 8.8a6 6 0 0 1-8.5-8.5l9.6-9.6a4 4 0 0 1 5.7 5.7l-9.6 9.6a2 2 0 0 1-2.8-2.8l8.8-8.8"/></svg>
-              <input class="sr-only" id="chatDocument" type="file" accept=".pdf,.txt,.md,.docx,application/pdf,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
-            </label>
+            <div class="attachment-picker">
+              <button class="icon-btn" id="attachmentBtn" type="button" title="Add attachment" aria-label="Add attachment" aria-haspopup="menu" aria-expanded="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21.4 11.6-8.8 8.8a6 6 0 0 1-8.5-8.5l9.6-9.6a4 4 0 0 1 5.7 5.7l-9.6 9.6a2 2 0 0 1-2.8-2.8l8.8-8.8"/></svg>
+              </button>
+              <div class="attachment-menu" id="attachmentMenu" role="menu">
+                <button class="menu-btn" type="button" role="menuitem" data-attach="camera">Take photo</button>
+                <button class="menu-btn" type="button" role="menuitem" data-attach="photo">Choose photo</button>
+                <button class="menu-btn" type="button" role="menuitem" data-attach="document">Choose document</button>
+              </div>
+              <input class="sr-only" id="chatCamera" type="file" accept="image/*" capture="environment">
+              <input class="sr-only" id="chatPhoto" type="file" accept="image/*">
+              <input class="sr-only" id="chatDocument" type="file" accept="image/*,.pdf,.txt,.md,.markdown,.docx,.wav,.mp3,.m4a,.flac,.ogg,.webm,application/pdf,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document,audio/*">
+            </div>
             <button class="icon-btn" id="voiceBtn" type="button" title="Hold to talk" aria-label="Hold to talk">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 18v3"/><path d="M8 21h8"/></svg>
             </button>
@@ -445,16 +470,41 @@ APP_HTML = """<!doctype html>
       <section id="settings" class="screen" data-title="Settings">
         <div class="panel-grid">
           <div class="panel stack">
-            <h2>Settings</h2>
-            <div class="item"><strong>Theme</strong><div class="small muted">Follows the system light or dark setting.</div></div>
-            <div class="item"><strong>Remote access</strong><div class="small muted" id="remoteState">Loopback-only by default.</div></div>
-            <div class="item"><strong>Voice</strong><div class="small muted" id="voiceState">Checking local transcription and browser playback.</div></div>
-            <button class="button secondary" id="logoutBtn">Forget service token</button>
+            <h2>Vault</h2>
+            <label class="stack small">Vault path<input id="vaultPathInput" placeholder="/absolute/path/to/vault"></label>
+            <div class="row"><button class="button secondary" id="validateVaultBtn" type="button">Validate</button><button class="button" id="saveVaultBtn" type="button">Save</button><button class="button secondary" id="rebuildIndexBtn" type="button">Rebuild index</button></div>
+            <div class="item small muted" id="vaultConfigResult">Vault status unavailable.</div>
           </div>
           <div class="panel stack">
-            <h2>Status</h2>
+            <h2>Model</h2>
+            <div class="item"><strong>Cogni-Brain</strong><div class="small muted" id="settingsModelState">Model status unavailable.</div></div>
+            <button class="button secondary" id="modelCheckBtn">Check endpoint</button>
+            <div id="modelDiagOut" class="small muted"></div>
+          </div>
+          <div class="panel stack">
+            <h2>Voice</h2>
+            <div class="item"><strong>Spoken replies</strong><div class="small muted" id="voiceState">Checking local transcription and browser playback.</div></div>
+          </div>
+          <div class="panel stack">
+            <h2>Access</h2>
+            <div class="item"><strong>Service mode</strong><div class="small muted" id="remoteState">Loopback-only by default.</div></div>
+            <div class="item"><strong>Phone URL</strong><div class="small muted" id="settingsPhoneUrl">Unavailable</div></div>
+            <div class="qr" id="settingsQr" hidden><img id="settingsQrImage" alt="QR code for LAN PWA URL"></div>
+            <div class="warning" id="settingsAccessWarning">Phone access unavailable while the service is local-only.</div>
+            <button class="button secondary" id="lanModeBtn" type="button">Enable LAN access</button>
+            <div class="small muted" id="lanModeHint"></div>
+          </div>
+          <div class="panel stack">
+            <h2>Diagnostics</h2>
             <div id="settingsStatus" class="list"></div>
+            <button class="button secondary" id="refreshStatusBtn" title="Refresh service status" aria-label="Refresh service status">Refresh service status</button>
             <button class="button secondary" id="advancedBtn">Advanced diagnostics</button>
+            <button class="button secondary" id="integrityBtn">Run integrity</button>
+            <button class="button secondary" id="evaluateBtn">Run evaluation</button>
+            <div id="integrityOut" class="small muted"></div>
+            <div id="evaluateOut" class="small muted"></div>
+            <details><summary>Raw diagnostics</summary><pre id="rawDiagnostics"></pre></details>
+            <button class="button secondary" id="logoutBtn">Forget service token</button>
           </div>
         </div>
       </section>
@@ -463,14 +513,10 @@ APP_HTML = """<!doctype html>
         <div class="panel stack">
           <div class="row"><h2>Advanced</h2><button class="button secondary" id="backSettingsBtn">Settings</button></div>
           <div class="panel-grid">
-            <div class="panel stack"><h3>Integrity</h3><button class="button secondary" id="integrityBtn">Run integrity</button><div id="integrityOut" class="small muted"></div></div>
-            <div class="panel stack"><h3>Evaluation</h3><button class="button secondary" id="evaluateBtn">Run evaluation</button><div id="evaluateOut" class="small muted"></div></div>
-            <div class="panel stack"><h3>Indexing</h3><div id="indexAdmin" class="small muted">Index rebuild runs after capture and upload.</div></div>
+            <div class="panel stack"><h3>Indexing</h3><div id="indexAdmin" class="small muted">Index rebuild runs after capture, upload, and vault changes.</div></div>
             <div class="panel stack"><h3>Backup</h3><div class="small muted">Use the local backup script or CLI for now.</div></div>
             <div class="panel stack"><h3>Operations</h3><div class="small muted">Safe-operation controls remain bounded by local policy.</div></div>
-            <div class="panel stack"><h3>Model diagnostics</h3><button class="button secondary" id="modelCheckBtn">Check endpoint</button><div id="modelDiagOut" class="small muted"></div></div>
           </div>
-          <details><summary>Raw diagnostics</summary><pre id="rawDiagnostics"></pre></details>
         </div>
       </section>
     </div>
@@ -605,16 +651,19 @@ function renderStatus(status) {
   $("safeStatus").textContent = status.safe_operations.status;
   $("launchStatus").textContent = status.service.status;
   $("localUrl").textContent = status.service.local_url;
+  $("phoneUrl").textContent = status.service.phone_url || status.service.phone_warning || "Phone URL unavailable";
   $("modelEndpoint").textContent = `${status.model.endpoint} . ${status.model.endpoint_status}`;
-  $("remoteState").textContent = status.service.loopback_only ? "Loopback-only: phones cannot reach this service." : "Reachable URL is configured for this session.";
+  $("remoteState").textContent = status.service.mode === "lan" ? "LAN access enabled for devices on the same network." : "Local-only: phones cannot reach this service.";
   $("voiceState").textContent = `STT: ${status.voice.stt.provider} (${status.voice.stt.status}). TTS: ${status.voice.tts.provider} (${status.voice.tts.status}).`;
-  $("phoneWarning").hidden = !status.service.loopback_only;
+  $("phoneWarning").hidden = status.service.mode === "lan" && status.service.phone_url;
+  $("phoneWarning").textContent = status.service.warning || status.service.phone_warning || "";
+  $("launchQr").hidden = !(status.service.mode === "lan" && status.service.phone_url);
   setDot("serviceDot", "ok"); setDot("vaultDot", status.vault.status === "ready" ? "ok" : "bad");
-  setDot("indexDot", "ok"); setDot("safeDot", "ok"); setDot("launchDot", status.service.loopback_only ? "warn" : "ok");
+  setDot("indexDot", "ok"); setDot("safeDot", "ok"); setDot("launchDot", status.service.mode === "lan" && status.service.phone_url ? "ok" : "warn");
   setDot("modelDot", status.model.endpoint_status === "online" ? "ok" : "warn");
   setDot("chatModelDot", status.model.endpoint_status === "online" ? "ok" : "warn");
   renderSettings();
-  $("qrImage").src = "/qr.svg?url=" + encodeURIComponent(status.service.reachable_url || status.service.local_url);
+  if (status.service.mode === "lan" && status.service.phone_url) $("qrImage").src = "/qr.svg?url=" + encodeURIComponent(status.service.phone_url);
 }
 async function refreshStatus() {
   const status = await api("/api/app-status");
@@ -763,8 +812,8 @@ function updateSpeakerButton() {
   const button = $("speakerBtn");
   if (!button) return;
   button.innerHTML = state.spokenReplies ? ICON_SPEAKER_ON : ICON_SPEAKER_MUTED;
-  button.title = state.spokenReplies ? "Spoken replies enabled" : "Spoken replies disabled";
-  button.setAttribute("aria-label", state.spokenReplies ? "Disable spoken replies" : "Enable spoken replies");
+  button.title = state.spokenReplies ? "Mute spoken replies" : "Enable spoken replies";
+  button.setAttribute("aria-label", state.spokenReplies ? "Mute spoken replies" : "Enable spoken replies");
 }
 function bindPlaybackControls() {
   document.querySelectorAll("[data-speech-action]").forEach(button => {
@@ -803,7 +852,8 @@ function setMicState(name) {
 function clearPendingAttachment() {
   if (state.pendingAttachment && state.pendingAttachment.previewUrl) URL.revokeObjectURL(state.pendingAttachment.previewUrl);
   state.pendingAttachment = null;
-  $("chatImage").value = "";
+  $("chatCamera").value = "";
+  $("chatPhoto").value = "";
   $("chatDocument").value = "";
   renderAttachmentPreview();
 }
@@ -822,7 +872,7 @@ function renderAttachmentPreview() {
     return;
   }
   title.textContent = attachment.kind === "image" ? "Image ready to send" : "Document ready";
-  meta.textContent = attachment.file.name;
+  meta.textContent = attachment.kind === "image" ? attachment.file.name : `${attachment.file.name} . ${attachment.file.type || "unknown type"}`;
   if (attachment.kind === "image") {
     image.hidden = false;
     image.src = attachment.previewUrl;
@@ -998,14 +1048,60 @@ async function loadTasks() {
 }
 function renderSettings() {
   if (!state.status) return;
+  $("vaultPathInput").value = $("vaultPathInput").value || state.status.vault.path;
+  $("settingsModelState").textContent = `${state.status.model.name} . ${state.status.model.endpoint_status}`;
+  $("settingsPhoneUrl").textContent = state.status.service.phone_url || state.status.service.phone_warning || "Phone access unavailable";
+  $("settingsQr").hidden = !(state.status.service.mode === "lan" && state.status.service.phone_url);
+  if (state.status.service.mode === "lan" && state.status.service.phone_url) $("settingsQrImage").src = "/qr.svg?url=" + encodeURIComponent(state.status.service.phone_url);
+  $("settingsAccessWarning").textContent = state.status.service.warning || state.status.service.phone_warning || "";
+  $("lanModeBtn").textContent = state.status.service.mode === "lan" ? "Return to local-only mode" : "Enable LAN access";
+  $("lanModeHint").textContent = state.status.service.mode === "lan" ? "Restart with --host 127.0.0.1 to return to local-only mode." : "Restart with --host 0.0.0.0 after explicitly enabling LAN access.";
+  const vault = state.status.vault;
+  $("vaultConfigResult").innerHTML = `
+    <strong>${escapeHtml(vault.status)}</strong>
+    <div>Indexed notes: ${escapeHtml(state.status.index.note_count || 0)}</div>
+    <div>Read: ${escapeHtml(vault.readable ? "yes" : "no")} . Write: ${escapeHtml(vault.writable ? "yes" : "no")}</div>
+    <div>Last successful index: ${escapeHtml(state.status.index.last_successful_index_time || "unknown")}</div>
+    ${vault.icloud ? `<div>${escapeHtml(vault.icloud_warning)}</div>` : ""}
+  `;
   $("settingsStatus").innerHTML = [
     ["Service", state.status.service.status],
     ["Local URL", state.status.service.local_url],
+    ["Mode", state.status.service.mode],
     ["Model", state.status.model.name],
     ["Vault", state.status.vault.path],
     ["Index", `${state.status.index.note_count || 0} notes`],
     ["Safe operations", state.status.safe_operations.status]
   ].map(([k,v]) => `<div class="item"><strong>${escapeHtml(k)}</strong><div class="small muted">${escapeHtml(v)}</div></div>`).join("");
+}
+async function validateVaultPath() {
+  const result = await api("/api/vault/validate", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({path:$("vaultPathInput").value})});
+  $("vaultPathInput").value = result.path || $("vaultPathInput").value;
+  $("vaultConfigResult").innerHTML = `<strong>${result.valid ? "Valid vault path" : "Vault path rejected"}</strong><div>${escapeHtml((result.errors || []).join(" ") || "Ready to save.")}</div>${result.icloud ? `<div>${escapeHtml(result.icloud_warning)}</div>` : ""}`;
+  return result;
+}
+async function saveVaultPath() {
+  const current = state.status && state.status.vault ? state.status.vault.path : "";
+  const requested = $("vaultPathInput").value.trim();
+  let confirmed = false;
+  if (current && requested && current !== requested && (state.status.index.note_count || 0) > 0) {
+    confirmed = confirm("Switch vaults and rebuild disposable indexes? Source files will not be moved, copied, or deleted.");
+    if (!confirmed) return;
+  }
+  const result = await api("/api/vault/save", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({path:requested, confirm_switch:confirmed})});
+  $("vaultConfigResult").innerHTML = `<strong>Vault saved</strong><div>${escapeHtml(result.path)}</div><div>Rebuilt ${escapeHtml(result.index_count)} indexed notes.</div>${result.icloud ? `<div>${escapeHtml(result.icloud_warning)}</div>` : ""}`;
+  await refreshStatus();
+}
+async function rebuildIndex() {
+  const result = await api("/api/index/rebuild", {method:"POST"});
+  $("vaultConfigResult").innerHTML = `<strong>Index rebuilt</strong><div>${escapeHtml(result.count)} indexed notes.</div>`;
+  await refreshStatus();
+}
+function toggleAttachmentMenu(force) {
+  const menu = $("attachmentMenu");
+  const visible = force === undefined ? !menu.classList.contains("visible") : Boolean(force);
+  menu.classList.toggle("visible", visible);
+  $("attachmentBtn").setAttribute("aria-expanded", visible ? "true" : "false");
 }
 function showError(target, err) {
   $(target).innerHTML = `<div class="error-card"><strong>Error</strong><div class="small">${escapeHtml(err.message || err)}</div></div>`;
@@ -1062,20 +1158,36 @@ $("chatForm").addEventListener("submit", async (event) => {
   }
   $("chatInput").value = "";
   state.pendingAttachment = null;
-  $("chatImage").value = "";
+  $("chatCamera").value = "";
+  $("chatPhoto").value = "";
   $("chatDocument").value = "";
   renderAttachmentPreview();
   try { await sendChat(text, attachment); } catch (err) { addMessage("assistant", "Something went wrong.", `<div class="error-card">${escapeHtml(err.message)}</div>`); }
 });
-$("chatImage").addEventListener("change", (event) => {
+function handlePhotoSelection(event) {
   const file = event.target.files[0];
   if (!file) return;
   setPendingImage(file);
-});
+  toggleAttachmentMenu(false);
+}
+$("chatCamera").addEventListener("change", handlePhotoSelection);
+$("chatPhoto").addEventListener("change", handlePhotoSelection);
 $("chatDocument").addEventListener("change", (event) => {
   const file = event.target.files[0];
   if (!file) return;
-  setPendingDocument(file);
+  if ((file.type || "").startsWith("image/")) setPendingImage(file);
+  else setPendingDocument(file);
+  toggleAttachmentMenu(false);
+});
+$("attachmentBtn").addEventListener("click", () => toggleAttachmentMenu());
+document.querySelectorAll("[data-attach]").forEach(button => button.addEventListener("click", () => {
+  const kind = button.dataset.attach;
+  if (kind === "camera") $("chatCamera").click();
+  if (kind === "photo") $("chatPhoto").click();
+  if (kind === "document") $("chatDocument").click();
+}));
+document.addEventListener("click", event => {
+  if (!$("attachmentMenu").contains(event.target) && !$("attachmentBtn").contains(event.target)) toggleAttachmentMenu(false);
 });
 $("removeAttachmentBtn").addEventListener("click", clearPendingAttachment);
 $("speakerBtn").addEventListener("click", () => setSpeakerEnabled(!state.spokenReplies));
@@ -1108,7 +1220,17 @@ $("knowledgeSearchBtn").addEventListener("click", async () => {
   try { renderSearchResults("knowledgeResults", await searchVault($("knowledgeQuery").value)); } catch (err) { showError("knowledgeResults", err); }
 });
 $("taskRefreshBtn").addEventListener("click", loadTasks);
-$("refreshBtn").addEventListener("click", refreshStatus);
+$("refreshStatusBtn").addEventListener("click", refreshStatus);
+$("validateVaultBtn").addEventListener("click", async () => { try { await validateVaultPath(); } catch (err) { $("vaultConfigResult").textContent = err.message; } });
+$("saveVaultBtn").addEventListener("click", async () => { try { await saveVaultPath(); } catch (err) { $("vaultConfigResult").textContent = err.message; } });
+$("rebuildIndexBtn").addEventListener("click", async () => { try { await rebuildIndex(); } catch (err) { $("vaultConfigResult").textContent = err.message; } });
+$("lanModeBtn").addEventListener("click", () => {
+  if (state.status && state.status.service.mode === "lan") {
+    $("lanModeHint").textContent = "Stop the service and restart with --host 127.0.0.1 to return to local-only mode.";
+  } else if (confirm("Enable LAN access? This exposes the service to devices on the same network and still requires the service token.")) {
+    $("lanModeHint").textContent = "Restart the service with --host 0.0.0.0 to enable LAN access.";
+  }
+});
 $("logoutBtn").addEventListener("click", () => { localStorage.removeItem("cogni_token"); location.reload(); });
 $("advancedBtn").addEventListener("click", () => { location.hash = "#advanced"; });
 $("backSettingsBtn").addEventListener("click", () => { location.hash = "#settings"; });
@@ -1170,17 +1292,26 @@ def manifest() -> dict:
 
 def app_status(settings: Settings, vault: Vault, index: Index, host_header: str | None, server_address: tuple | None = None) -> dict:
     local_url = _request_url(host_header, server_address)
-    hostname = urlparse(local_url).hostname or ""
-    loopback_only = hostname in {"127.0.0.1", "localhost", "::1"}
+    bind_host = _server_bind_host(server_address)
+    local_only = bind_host in {"127.0.0.1", "localhost", "::1"}
+    lan_ip = None if local_only else detect_lan_ip()
+    port = server_address[1] if server_address else (urlparse(local_url).port or 8765)
+    phone_url = f"http://{lan_ip}:{port}" if lan_ip else None
     index_health = index.health()
+    validation = validate_vault_path(str(vault.root))
     return {
         "service": {
             "name": "Cogni Life OS",
             "status": "online",
+            "mode": "local-only" if local_only else "lan",
+            "bind_host": bind_host,
             "local_url": local_url,
-            "reachable_url": local_url,
-            "loopback_only": loopback_only,
-            "phone_warning": "Phone access unavailable: service is bound to 127.0.0.1" if loopback_only else None,
+            "reachable_url": phone_url,
+            "phone_url": phone_url,
+            "lan_ip": lan_ip,
+            "loopback_only": local_only,
+            "phone_warning": LOCAL_ONLY_PHONE_MESSAGE if local_only else (None if lan_ip else "No usable private LAN address was detected."),
+            "warning": LOCAL_ONLY_PHONE_MESSAGE if local_only else LAN_WARNING,
         },
         "model": {
             "name": settings.model_name,
@@ -1188,13 +1319,22 @@ def app_status(settings: Settings, vault: Vault, index: Index, host_header: str 
             "endpoint_status": "configured",
             "live_multimodal": False,
         },
-        "vault": {"status": "ready" if vault.root.exists() else "missing", "path": str(vault.root)},
-        "index": index_health,
+        "vault": {
+            "status": "ready" if validation["valid"] else "invalid",
+            "path": str(vault.root),
+            "readable": validation["readable"],
+            "writable": validation["writable"],
+            "resembles_markdown_vault": validation["resembles_markdown_vault"],
+            "errors": validation["errors"],
+            "icloud": validation["icloud"],
+            "icloud_warning": validation["icloud_warning"],
+        },
+        "index": {**index_health, "last_successful_index_time": index_health.get("checked")},
         "safe_operations": {"status": "confirmation required for proposed writes", "quarantine": "enabled"},
         "features": {
             "voice_notes": True,
             "video": False,
-            "remote_access": not loopback_only,
+            "remote_access": not local_only,
             "live_model_chat": True,
             "file_upload": True,
             "offline_shell": True,
@@ -1456,6 +1596,121 @@ def _request_url(host_header: str | None, server_address: tuple | None) -> str:
     return "http://127.0.0.1:8765"
 
 
+def _is_private_lan_ip(value: str) -> bool:
+    parts = value.split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        first, second = int(parts[0]), int(parts[1])
+    except ValueError:
+        return False
+    return first == 10 or (first == 172 and 16 <= second <= 31) or (first == 192 and second == 168)
+
+
+def detect_lan_ip() -> str | None:
+    candidates: list[str] = []
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            candidates.append(sock.getsockname()[0])
+    except OSError:
+        pass
+    try:
+        host = socket.gethostname()
+        candidates.extend(socket.gethostbyname_ex(host)[2])
+    except OSError:
+        pass
+    for candidate in candidates:
+        if candidate not in {"127.0.0.1", "0.0.0.0"} and _is_private_lan_ip(candidate):
+            return candidate
+    return None
+
+
+def _server_bind_host(server_address: tuple | None) -> str:
+    if not server_address:
+        return "127.0.0.1"
+    host = server_address[0]
+    return "127.0.0.1" if host in {"", "localhost"} else str(host)
+
+
+def _is_icloud_path(path: Path) -> bool:
+    marker = str(path).lower()
+    return any(part in marker for part in ("icloud", "mobile documents", "com~apple~clouddocs"))
+
+
+def validate_vault_path(path_value: str) -> dict:
+    errors: list[str] = []
+    if not str(path_value or "").strip():
+        return {"valid": False, "path": "", "errors": ["Vault path is required."]}
+    expanded = Path(path_value).expanduser()
+    if not expanded.is_absolute():
+        errors.append("Vault path must be absolute.")
+        resolved = expanded
+    else:
+        resolved = expanded.resolve()
+    if not resolved.exists():
+        errors.append("Folder does not exist.")
+    elif not resolved.is_dir():
+        errors.append("Path is not a folder.")
+    readable = resolved.is_dir() and os.access(resolved, os.R_OK)
+    writable = False
+    if resolved.exists() and resolved.is_dir():
+        if not readable:
+            errors.append("Folder is not readable.")
+        try:
+            with tempfile.NamedTemporaryFile(prefix=".cogni-write-test-", dir=resolved, delete=True) as handle:
+                handle.write(b"ok")
+                handle.flush()
+            writable = True
+        except OSError:
+            errors.append("Folder is not writable.")
+    markdown_count = 0
+    resembles = False
+    if resolved.exists() and resolved.is_dir() and readable:
+        markdown_count = sum(1 for _ in resolved.rglob("*.md"))
+        known_dirs = {"00-system", "10-sources", "30-concepts", ".obsidian"}
+        resembles = markdown_count > 0 or any((resolved / item).exists() for item in known_dirs)
+        if not resembles:
+            errors.append("Folder does not appear to contain Markdown notes or a known vault structure.")
+    icloud = _is_icloud_path(resolved)
+    return {
+        "valid": not errors,
+        "path": str(resolved),
+        "errors": errors,
+        "readable": readable,
+        "writable": writable,
+        "markdown_count": markdown_count,
+        "resembles_markdown_vault": resembles,
+        "icloud": icloud,
+        "icloud_warning": ICLOUD_WARNING if icloud else None,
+    }
+
+
+def save_vault_config(settings: Settings, index: Index, current_vault: Vault, path_value: str, *, confirm_switch: bool = False) -> tuple[Vault, dict]:
+    validation = validate_vault_path(path_value)
+    if not validation["valid"]:
+        raise ValueError("; ".join(validation["errors"]))
+    requested = Path(validation["path"])
+    indexed = index.health().get("note_count", 0)
+    if requested != current_vault.root.resolve() and indexed and not confirm_switch:
+        raise PermissionError("Confirm before switching away from an indexed vault.")
+    before_files = {path.relative_to(requested) for path in requested.rglob("*") if path.is_file()}
+    persist_vault_path(requested, settings.local_config_path)
+    new_vault = Vault(requested)
+    count = index.rebuild(new_vault)
+    after_files = {path.relative_to(requested) for path in requested.rglob("*") if path.is_file()}
+    return new_vault, {
+        "status": "saved",
+        "path": str(requested),
+        "index_count": count,
+        "moved_source_files": False,
+        "deleted_source_files": not before_files.issubset(after_files),
+        "source_files_modified": False,
+        "icloud": validation["icloud"],
+        "icloud_warning": validation["icloud_warning"],
+    }
+
+
 def make_handler(settings: Settings):
     vault = Vault(settings.vault_path)
     vault.init()
@@ -1559,11 +1814,32 @@ def make_handler(settings: Settings):
             self._json(404, {"error": "not_found"})
 
         def do_POST(self):
+            nonlocal vault
             parsed = urlparse(self.path)
             if parsed.path.startswith("/api/") and not self._auth():
                 self._json(401, {"error": "unauthorized"})
                 return
             try:
+                if parsed.path == "/api/vault/validate":
+                    payload = self._read_json()
+                    self._json(200, validate_vault_path(str(payload.get("path", ""))))
+                    return
+                if parsed.path == "/api/vault/save":
+                    payload = self._read_json()
+                    try:
+                        vault, result = save_vault_config(settings, index, vault, str(payload.get("path", "")), confirm_switch=bool(payload.get("confirm_switch")))
+                    except PermissionError as exc:
+                        self._json(409, {"error": "confirmation_required", "detail": str(exc)})
+                        return
+                    except ValueError as exc:
+                        self._json(400, {"error": "invalid_vault_path", "detail": str(exc)})
+                        return
+                    self._json(200, result)
+                    return
+                if parsed.path == "/api/index/rebuild":
+                    count = index.rebuild(vault)
+                    self._json(200, {"status": "rebuilt", "count": count, "source_files_modified": False})
+                    return
                 if parsed.path == "/api/capture-text":
                     payload = self._read_json()
                     result = capture_text(vault, payload["text"], channel=payload.get("channel", "pwa"), sender=payload.get("sender", "user"))
@@ -1612,9 +1888,13 @@ def handle_upload(vault: Vault, index: Index, settings: Settings, payload: dict)
 def serve(settings: Settings, host: str, port: int) -> None:
     if settings.service_token in {"", "dev-local-change-me"}:
         raise ValueError("COGNI_SERVICE_TOKEN must be set to a non-default secret before starting the service")
-    if host not in {"127.0.0.1", "localhost", "::1"}:
-        raise ValueError("local phase service may only bind to loopback addresses")
+    if host not in {"127.0.0.1", "localhost", "::1", "0.0.0.0"}:
+        raise ValueError("service may only bind to loopback addresses or 0.0.0.0 for explicit LAN access")
     server = ThreadingHTTPServer((host, port), make_handler(settings))
     print(f"Cogni Life OS listening on http://{host}:{port}")
+    if host == "0.0.0.0":
+        lan_ip = detect_lan_ip()
+        print(f"LAN URL: {'http://' + lan_ip + ':' + str(port) if lan_ip else 'unavailable'}")
+        print(LAN_WARNING)
     print("Service token: [REDACTED]")
     server.serve_forever()

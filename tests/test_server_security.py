@@ -12,9 +12,9 @@ class ServerSecurityTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             serve(Settings(service_token="dev-local-change-me"), "127.0.0.1", 0)
 
-    def test_non_loopback_bind_refused(self):
+    def test_unapproved_bind_refused(self):
         with self.assertRaises(ValueError):
-            serve(Settings(service_token="secret-token"), "0.0.0.0", 0)
+            serve(Settings(service_token="secret-token"), "1.2.3.4", 0)
 
     def test_token_expiry_revocation_rotation_and_rate_limit(self):
         now = [1000.0]

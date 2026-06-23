@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .ids import new_id, sha256_bytes, utc_now
 from .markdown import note
-from .path_safety import assert_not_icloud, safe_join
+from .path_safety import safe_join
 
 
 VAULT_DIRS = [
@@ -47,7 +47,6 @@ class Vault:
         self.max_write_bytes = max_write_bytes
 
     def init(self) -> None:
-        assert_not_icloud(self.root)
         self.root.mkdir(parents=True, exist_ok=True)
         for item in VAULT_DIRS:
             safe_join(self.root, item).mkdir(parents=True, exist_ok=True)

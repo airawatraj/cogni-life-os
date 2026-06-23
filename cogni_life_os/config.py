@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -8,13 +9,43 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+LOCAL_CONFIG_PATH = PROJECT_ROOT / ".cogni" / "config.json"
+
+
+def _local_config() -> dict:
+    if not LOCAL_CONFIG_PATH.exists():
+        return {}
+    try:
+        return json.loads(LOCAL_CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def configured_vault_path() -> Path:
+    value = os.environ.get("COGNI_VAULT_PATH") or _local_config().get("COGNI_VAULT_PATH")
+    return Path(value).expanduser() if value else PROJECT_ROOT / "local_test_vault"
+
+
+def persist_vault_path(path: Path, config_path: Path = LOCAL_CONFIG_PATH) -> None:
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    data = {}
+    if config_path.exists():
+        try:
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+    data["COGNI_VAULT_PATH"] = str(path)
+    config_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 @dataclass(frozen=True)
 class Settings:
     project_root: Path = PROJECT_ROOT
-    vault_path: Path = PROJECT_ROOT / "local_test_vault"
+    vault_path: Path = configured_vault_path()
     runtime_path: Path = PROJECT_ROOT / ".cogni" / "runtime"
     backup_path: Path = PROJECT_ROOT / ".cogni" / "backups"
     evidence_path: Path = PROJECT_ROOT / ".cogni" / "evaluation-evidence"
+    local_config_path: Path = LOCAL_CONFIG_PATH
     model_base_url: str = os.environ.get("COGNI_MODEL_BASE_URL", "http://127.0.0.1:8000/v1")
     model_api_key: str = os.environ.get("COGNI_MODEL_API_KEY", "local")
     model_name: str = os.environ.get("COGNI_MODEL_NAME", "Cogni-Brain")
